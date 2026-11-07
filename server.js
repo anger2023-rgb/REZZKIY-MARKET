@@ -35,8 +35,12 @@ const categories={
 };
 
 const conditions=[
-  'Factory New','Minimal Wear','Field-Tested',
-  'Well-Worn','Battle-Scarred','Not Painted'
+  'Factory New',
+  'Minimal Wear',
+  'Field-Tested',
+  'Well-Worn',
+  'Battle-Scarred',
+  'Not Painted'
 ];
 
 const categoryOf=w=>Object.keys(categories).find(
@@ -48,27 +52,37 @@ function auth(raw){
     if(!process.env.BOT_TOKEN||!raw)return null;
     const p=new URLSearchParams(raw);
     const hash=p.get('hash');
+
     if(!/^[0-9a-f]{64}$/i.test(hash||''))return null;
     p.delete('hash');
 
     const t=Number(p.get('auth_date'));
     const now=Math.floor(Date.now()/1000);
-    if(!Number.isSafeInteger(t)||t>now+60||now-t>3600)return null;
+
+    if(!Number.isSafeInteger(t)||t>now+60||now-t>3600){
+      return null;
+    }
 
     const s=[...p]
       .sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0)
       .map(([k,v])=>`${k}=${v}`)
       .join('\n');
 
-    const secret=crypto.createHmac('sha256','WebAppData')
-      .update(process.env.BOT_TOKEN).digest();
+    const secret=crypto
+      .createHmac('sha256','WebAppData')
+      .update(process.env.BOT_TOKEN)
+      .digest();
 
-    const expected=crypto.createHmac('sha256',secret)
-      .update(s).digest();
+    const expected=crypto
+      .createHmac('sha256',secret)
+      .update(s)
+      .digest();
 
     const received=Buffer.from(hash,'hex');
 
-    if(!crypto.timingSafeEqual(expected,received))return null;
+    if(!crypto.timingSafeEqual(expected,received)){
+      return null;
+    }
 
     const u=JSON.parse(p.get('user')||'null');
     return Number.isSafeInteger(u?.id)?u:null;
@@ -79,18 +93,25 @@ function auth(raw){
 
 function user(req,res,next){
   const u=auth(req.get('X-Telegram-Init-Data'));
-  if(!u)return res.status(401).json({
-    error:'Открой приложение через Telegram'
-  });
+
+  if(!u){
+    return res.status(401).json({
+      error:'Открой приложение через Telegram'
+    });
+  }
+
   req.telegramUser=u;
   next();
 }
 
 function admin(req,res,next){
   const u=auth(req.get('X-Telegram-Init-Data'));
-  if(!u)return res.status(401).json({
-    error:'Требуется Telegram'
-  });
+
+  if(!u){
+    return res.status(401).json({
+      error:'Требуется Telegram'
+    });
+  }
 
   if(
     !Number.isSafeInteger(Number(process.env.ADMIN_TELEGRAM_ID))||
@@ -108,23 +129,29 @@ function admin(req,res,next){
 const bad=(res,code,error)=>res.status(code).json({error});
 const validId=x=>/^\d+$/.test(String(x));
 
-function key(){
+const key=()=>{
   const raw=process.env.PAYMENT_DATA_KEY||'';
+
   if(!/^[0-9a-fA-F]{64}$/.test(raw)){
     throw Error(
       'PAYMENT_DATA_KEY должен содержать 64 шестнадцатеричных символа'
     );
   }
+
   return Buffer.from(raw,'hex');
-}
+};
 
 function encrypt(value){
   const iv=crypto.randomBytes(12);
-  const cipher=crypto.createCipheriv('aes-256-gcm',key(),iv);
+  const cipher=crypto.createCipheriv(
+    'aes-256-gcm',key(),iv
+  );
+
   const payload=Buffer.concat([
     cipher.update(JSON.stringify(value),'utf8'),
     cipher.final()
   ]);
+
   return Buffer.concat([
     iv,cipher.getAuthTag(),payload
   ]).toString('base64');
@@ -132,10 +159,13 @@ function encrypt(value){
 
 function decrypt(raw){
   const buf=Buffer.from(raw,'base64');
+
   const d=crypto.createDecipheriv(
     'aes-256-gcm',key(),buf.subarray(0,12)
   );
+
   d.setAuthTag(buf.subarray(12,28));
+
   return JSON.parse(
     Buffer.concat([
       d.update(buf.subarray(28)),
@@ -204,27 +234,24 @@ function paymentInput(body){
 
 function publicPayment(row){
   if(!row?.payment_details)return null;
+
   const p=decrypt(row.payment_details);
 
-  if(p.method==='BALANCE'){
-    return {method:'BALANCE'};
-  }
-
-  if(p.method==='RUB'){
-    return {
-      method:'RUB',
-      cardMasked:'•••• '+p.card.slice(-4),
-      phoneMasked:'•••• '+p.phone.slice(-4),
-      fullName:p.fullName,
-      bank:p.bank
-    };
-  }
-
-  return {
-    method:'USDT',
-    network:p.network,
-    address:p.address
-  };
+  return p.method==='BALANCE'
+    ?{method:'BALANCE'}
+    :p.method==='RUB'
+      ?{
+        method:'RUB',
+        cardMasked:'•••• '+p.card.slice(-4),
+        phoneMasked:'•••• '+p.phone.slice(-4),
+        fullName:p.fullName,
+        bank:p.bank
+      }
+      :{
+        method:'USDT',
+        network:p.network,
+        address:p.address
+      };
 }
 
 async function initDb(){
@@ -329,12 +356,11 @@ app.get('/api/categories',(_q,r)=>{
 
 app.get('/api/products',async(_q,r)=>{
   try{
-    r.json(
-      (await pool.query(
-        'SELECT * FROM products ORDER BY created_at DESC,id DESC'
-      )).rows
+    const result=await pool.query(
+      'SELECT * FROM products ORDER BY created_at DESC,id DESC'
     );
-  }catch{
+    r.json(result.rows);
+  }catch(e){
     bad(r,500,'Ошибка каталога');
   }
 });
@@ -349,7 +375,9 @@ app.post('/api/images',admin,async(q,r)=>{
       /^data:(image\/jpeg|image\/png|image\/webp);base64,([A-Za-z0-9+/]+={0,2})$/
     );
 
-    if(!m)return bad(r,400,'Нужен JPG, PNG или WebP');
+    if(!m){
+      return bad(r,400,'Нужен JPG, PNG или WebP');
+    }
 
     const data=Buffer.from(m[2],'base64');
 
@@ -358,7 +386,9 @@ app.post('/api/images',admin,async(q,r)=>{
     }
 
     const jpeg=
-      data[0]===255&&data[1]===216&&data[2]===255;
+      data[0]===255&&
+      data[1]===216&&
+      data[2]===255;
 
     const png=data.subarray(0,8).equals(
       Buffer.from([137,80,78,71,13,10,26,10])
@@ -383,8 +413,10 @@ app.post('/api/images',admin,async(q,r)=>{
       [id,m[1],data]
     );
 
-    r.status(201).json({url:'/api/images/'+id});
-  }catch{
+    r.status(201).json({
+      url:'/api/images/'+id
+    });
+  }catch(e){
     bad(r,500,'Ошибка загрузки фото');
   }
 });
@@ -400,7 +432,9 @@ app.get('/api/images/:id',async(q,r)=>{
       [q.params.id]
     );
 
-    if(!x.rowCount)return r.sendStatus(404);
+    if(!x.rowCount){
+      return r.sendStatus(404);
+    }
 
     r.set('Content-Type',x.rows[0].mime);
     r.set('X-Content-Type-Options','nosniff');
@@ -413,7 +447,12 @@ app.get('/api/images/:id',async(q,r)=>{
 
 app.post('/api/products',admin,async(q,r)=>{
   const {
-    weapon,skin,condition,price,quantity,image_url=''
+    weapon,
+    skin,
+    condition,
+    price,
+    quantity,
+    image_url=''
   }=q.body||{};
 
   if(
@@ -439,24 +478,31 @@ app.post('/api/products',admin,async(q,r)=>{
     !/^\/api\/images\/[0-9a-f-]{36}$/i.test(image_url)
   ){
     try{
-      if(new URL(image_url).protocol!=='https:')throw Error();
+      if(new URL(image_url).protocol!=='https:'){
+        throw Error();
+      }
     }catch{
       return bad(r,400,'Неверная ссылка фото');
     }
   }
 
   try{
-    const x=await pool.query(`
-      INSERT INTO products(
+    const x=await pool.query(
+      `INSERT INTO products(
         weapon,skin,category,condition,
         price,quantity,image_url
-      )
-      VALUES($1,$2,$3,$4,$5,$6,$7)
-      RETURNING *
-    `,[
-      weapon,skin.trim(),categoryOf(weapon),
-      condition,price,quantity,image_url
-    ]);
+      ) VALUES($1,$2,$3,$4,$5,$6,$7)
+      RETURNING *`,
+      [
+        weapon,
+        skin.trim(),
+        categoryOf(weapon),
+        condition,
+        price,
+        quantity,
+        image_url
+      ]
+    );
 
     r.status(201).json(x.rows[0]);
   }catch{
@@ -475,9 +521,11 @@ app.delete('/api/products/:id',admin,async(q,r)=>{
       [q.params.id]
     );
 
-    x.rowCount
-      ?r.json({success:true})
-      :bad(r,404,'Товар не найден');
+    if(x.rowCount){
+      r.json({success:true});
+    }else{
+      bad(r,404,'Товар не найден');
+    }
   }catch{
     bad(r,500,'Ошибка удаления');
   }
@@ -496,10 +544,11 @@ app.post('/api/steam/connect',user,async(q,r)=>{
       'DELETE FROM steam_auth_states WHERE expires_at<NOW()'
     );
 
-    await pool.query(`
-      INSERT INTO steam_auth_states
-      VALUES($1,$2,NOW()+INTERVAL '10 minutes')
-    `,[stateHash(state),q.telegramUser.id]);
+    await pool.query(
+      `INSERT INTO steam_auth_states
+       VALUES($1,$2,NOW()+INTERVAL '10 minutes')`,
+      [stateHash(state),q.telegramUser.id]
+    );
 
     const u=new URL(OPENID);
 
@@ -518,7 +567,7 @@ app.post('/api/steam/connect',user,async(q,r)=>{
     }
 
     r.json({url:u.toString()});
-  }catch{
+  }catch(e){
     bad(r,500,'Не удалось подключить Steam');
   }
 });
@@ -535,13 +584,16 @@ app.get('/auth/steam/callback',async(q,r)=>{
   }
 
   try{
-    const pending=await pool.query(`
-      DELETE FROM steam_auth_states
-      WHERE state_hash=$1 AND expires_at>NOW()
-      RETURNING telegram_id
-    `,[stateHash(state)]);
+    const pending=await pool.query(
+      `DELETE FROM steam_auth_states
+       WHERE state_hash=$1 AND expires_at>NOW()
+       RETURNING telegram_id`,
+      [stateHash(state)]
+    );
 
-    if(!pending.rowCount)return fail();
+    if(!pending.rowCount){
+      return fail();
+    }
 
     const p=new URLSearchParams();
 
@@ -553,7 +605,8 @@ app.get('/auth/steam/callback',async(q,r)=>{
 
     const claimed=p.get('openid.claimed_id')||'';
 
-    const m=/^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/
+    const m=
+      /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/
       .exec(claimed);
 
     const signed=(p.get('openid.signed')||'').split(',');
@@ -568,8 +621,12 @@ app.get('/auth/steam/callback',async(q,r)=>{
       p.get('openid.identity')!==claimed||
       !p.get('openid.sig')||
       ![
-        'return_to','claimed_id','identity',
-        'response_nonce','assoc_handle','op_endpoint'
+        'return_to',
+        'claimed_id',
+        'identity',
+        'response_nonce',
+        'assoc_handle',
+        'op_endpoint'
       ].every(k=>signed.includes(k))
     ){
       return fail();
@@ -593,14 +650,15 @@ app.get('/auth/steam/callback',async(q,r)=>{
       return fail();
     }
 
-    await pool.query(`
-      INSERT INTO steam_accounts(telegram_id,steam_id)
-      VALUES($1,$2)
-      ON CONFLICT(telegram_id)
-      DO UPDATE SET
-        steam_id=EXCLUDED.steam_id,
-        linked_at=NOW()
-    `,[pending.rows[0].telegram_id,m[1]]);
+    await pool.query(
+      `INSERT INTO steam_accounts(telegram_id,steam_id)
+       VALUES($1,$2)
+       ON CONFLICT(telegram_id)
+       DO UPDATE SET
+       steam_id=EXCLUDED.steam_id,
+       linked_at=NOW()`,
+      [pending.rows[0].telegram_id,m[1]]
+    );
 
     r.redirect(303,'/?steam=success');
   }catch(e){
@@ -615,7 +673,7 @@ async function avatarFor(id){
   const cached=avatarCache.get(id);
   if(cached?.expires>Date.now())return cached.value;
 
-  let value='';
+  const value={avatar:'',nickname:''};
 
   try{
     const resp=await fetch(
@@ -625,23 +683,47 @@ async function avatarFor(id){
 
     if(resp.ok){
       const xml=await resp.text();
-      const m=xml.match(
+
+      const avatar=xml.match(
         /<avatarFull>(?:<!\[CDATA\[)?(https:\/\/[^<\]]+)/
       );
 
-      if(m){
-        const u=new URL(m[1].replace(/&amp;/g,'&'));
+      if(avatar){
+        const url=new URL(
+          avatar[1].replace(/&amp;/g,'&')
+        );
 
         if([
           'avatars.steamstatic.com',
           'steamcdn-a.akamaihd.net',
           'avatars.akamai.steamstatic.com'
-        ].includes(u.hostname)){
-          value=u.toString();
+        ].includes(url.hostname)){
+          value.avatar=url.toString();
         }
       }
+
+      const persona=xml.match(
+        /<steamID>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/steamID>/
+      );
+
+      if(persona){
+        value.nickname=persona[1]
+          .replace(/\]\]>$/,'')
+          .replace(/&amp;/g,'&')
+          .replace(/&lt;/g,'<')
+          .replace(/&gt;/g,'>')
+          .replace(/&quot;/g,'"')
+          .replace(/&#39;/g,"'")
+          .trim()
+          .slice(0,100);
+      }
     }
-  }catch{}
+  }catch(e){
+    console.warn(
+      'Steam public profile unavailable:',
+      e.message
+    );
+  }
 
   avatarCache.set(id,{
     value,
@@ -652,24 +734,27 @@ async function avatarFor(id){
 }
 
 async function steamFor(id){
-  return (
-    await pool.query(
-      'SELECT steam_id FROM steam_accounts WHERE telegram_id=$1',
-      [id]
-    )
-  ).rows[0]?.steam_id||null;
+  const x=await pool.query(
+    'SELECT steam_id FROM steam_accounts WHERE telegram_id=$1',
+    [id]
+  );
+  return x.rows[0]?.steam_id||null;
 }
 
 app.get('/api/steam/me',user,async(q,r)=>{
   try{
     const steamId=await steamFor(q.telegramUser.id);
+    const profile=steamId
+      ?await avatarFor(steamId)
+      :{avatar:'',nickname:''};
 
     r.json({
       connected:!!steamId,
       steamId,
-      avatar:steamId?await avatarFor(steamId):''
+      avatar:profile.avatar,
+      nickname:profile.nickname
     });
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка Steam');
   }
 });
@@ -679,7 +764,7 @@ const inventoryRequests=new Map();
 
 async function fetchInventory(id){
   let cursor=null;
-  let items=[];
+  const items=[];
 
   for(let i=0;i<5;i++){
     const u=new URL(
@@ -717,13 +802,16 @@ async function fetchInventory(id){
     }
 
     const desc=new Map(
-      (data.descriptions||[]).map(
-        d=>[d.classid+'_'+d.instanceid,d]
-      )
+      (data.descriptions||[]).map(d=>[
+        d.classid+'_'+d.instanceid,
+        d
+      ])
     );
 
     for(const a of data.assets||[]){
-      const d=desc.get(a.classid+'_'+a.instanceid);
+      const d=desc.get(
+        a.classid+'_'+a.instanceid
+      );
 
       if(d?.tradable!==1)continue;
 
@@ -735,15 +823,17 @@ async function fetchInventory(id){
           d.market_hash_name||d.name||'CS2 item'
         ).slice(0,200),
         icon:/^[a-zA-Z0-9_/-]+$/.test(d.icon_url||'')
-          ?'https://community.fastly.steamstatic.com/economy/image/'+
-            d.icon_url
+          ?'https://community.fastly.steamstatic.com/economy/image/'+d.icon_url
           :'',
         type:String(d.type||'').slice(0,120),
         amount:Number(a.amount||1)
       });
     }
 
-    if(!data.more_items||!data.last_assetid)break;
+    if(!data.more_items||!data.last_assetid){
+      break;
+    }
+
     cursor=String(data.last_assetid);
   }
 
@@ -761,7 +851,7 @@ app.get('/api/sell/rules',user,async(q,r)=>{
       version:RULES,
       accepted:x.rows[0]?.rules_version===RULES
     });
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка правил');
   }
 });
@@ -775,34 +865,37 @@ app.post('/api/sell/agree',user,async(q,r)=>{
   }
 
   try{
-    await pool.query(`
-      INSERT INTO sell_consents(telegram_id,rules_version)
-      VALUES($1,$2)
+    await pool.query(
+      `INSERT INTO sell_consents(
+        telegram_id,rules_version
+      ) VALUES($1,$2)
       ON CONFLICT(telegram_id)
       DO UPDATE SET
         rules_version=EXCLUDED.rules_version,
-        agreed_at=NOW()
-    `,[q.telegramUser.id,RULES]);
+        agreed_at=NOW()`,
+      [q.telegramUser.id,RULES]
+    );
 
     r.json({accepted:true});
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка сохранения');
   }
 });
 
 async function consent(q,r,next){
   try{
-    const x=await pool.query(`
-      SELECT 1 FROM sell_consents
-      WHERE telegram_id=$1 AND rules_version=$2
-    `,[q.telegramUser.id,RULES]);
+    const x=await pool.query(
+      `SELECT 1 FROM sell_consents
+       WHERE telegram_id=$1 AND rules_version=$2`,
+      [q.telegramUser.id,RULES]
+    );
 
     if(!x.rowCount){
       return bad(r,403,'Сначала прими правила');
     }
 
     next();
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка согласия');
   }
 }
@@ -811,7 +904,9 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
   try{
     const id=await steamFor(q.telegramUser.id);
 
-    if(!id)return bad(r,400,'Привяжи Steam');
+    if(!id){
+      return bad(r,400,'Привяжи Steam');
+    }
 
     const cached=inventoryCache.get(
       String(q.telegramUser.id)
@@ -862,8 +957,9 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
     !Array.isArray(ids)||
     ids.length<1||
     ids.length>30||
-    ids.some(
-      id=>typeof id!=='string'||!/^\d{1,25}$/.test(id)
+    ids.some(id=>
+      typeof id!=='string'||
+      !/^\d{1,25}$/.test(id)
     )||
     new Set(ids).size!==ids.length
   ){
@@ -884,8 +980,8 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
       return bad(r,400,'Обнови инвентарь');
     }
 
-    const items=ids.map(
-      assetid=>cache.items.find(i=>i.assetid===assetid)
+    const items=ids.map(assetid=>
+      cache.items.find(i=>i.assetid===assetid)
     );
 
     if(items.some(x=>!x)){
@@ -894,50 +990,61 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
       );
     }
 
-    const x=await pool.query(`
-      INSERT INTO buyout_requests(
-        telegram_id,steam_id,items,
-        seller_username,seller_name
-      )
-      VALUES($1,$2,$3::jsonb,$4,$5)
-      RETURNING id,status
-    `,[
-      q.telegramUser.id,
-      id,
-      JSON.stringify(items),
-      q.telegramUser.username||null,
+    const x=await pool.query(
+      `INSERT INTO buyout_requests(
+        telegram_id,
+        steam_id,
+        items,
+        seller_username,
+        seller_name
+      ) VALUES($1,$2,$3::jsonb,$4,$5)
+      RETURNING id,status`,
       [
-        q.telegramUser.first_name,
-        q.telegramUser.last_name
-      ].filter(Boolean).join(' ')||null
-    ]);
+        q.telegramUser.id,
+        id,
+        JSON.stringify(items),
+        q.telegramUser.username||null,
+        [
+          q.telegramUser.first_name,
+          q.telegramUser.last_name
+        ].filter(Boolean).join(' ')||null
+      ]
+    );
 
     r.status(201).json(x.rows[0]);
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка заявки');
   }
 });
 
 app.get('/api/sell/requests',user,async(q,r)=>{
   try{
-    const x=await pool.query(`
-      SELECT
-        id,items,status,offer_rub,created_at,
-        trade_opened_at,received_at,payout_due_at,
-        paid_at,payment_details
+    const x=await pool.query(
+      `SELECT
+        id,
+        items,
+        status,
+        offer_rub,
+        created_at,
+        trade_opened_at,
+        received_at,
+        payout_due_at,
+        paid_at,
+        payment_details
       FROM buyout_requests
       WHERE telegram_id=$1
       ORDER BY id DESC
-      LIMIT 50
-    `,[q.telegramUser.id]);
+      LIMIT 50`,
+      [q.telegramUser.id]
+    );
 
-    r.json(
-      x.rows.map(({payment_details,...row})=>({
+    r.json(x.rows.map(
+      ({payment_details,...row})=>({
         ...row,
         paymentSaved:!!payment_details,
         payment:publicPayment({payment_details})
-      }))
-    );
+      })
+    ));
   }catch(e){
     console.error(e);
     bad(r,500,'Ошибка заявок');
@@ -946,24 +1053,35 @@ app.get('/api/sell/requests',user,async(q,r)=>{
 
 app.get('/api/admin/buyouts',admin,async(q,r)=>{
   try{
-    const x=await pool.query(`
-      SELECT
-        id,telegram_id,steam_id,seller_username,
-        seller_name,items,status,offer_rub,created_at,
-        trade_opened_at,received_at,payout_due_at,
-        paid_at,received_by,payment_details
+    const x=await pool.query(
+      `SELECT
+        id,
+        telegram_id,
+        steam_id,
+        seller_username,
+        seller_name,
+        items,
+        status,
+        offer_rub,
+        created_at,
+        trade_opened_at,
+        received_at,
+        payout_due_at,
+        paid_at,
+        received_by,
+        payment_details
       FROM buyout_requests
       ORDER BY id DESC
-      LIMIT 100
-    `);
+      LIMIT 100`
+    );
 
-    r.json(
-      x.rows.map(({payment_details,...row})=>({
+    r.json(x.rows.map(
+      ({payment_details,...row})=>({
         ...row,
         paymentSaved:!!payment_details,
         payment:publicPayment({payment_details})
-      }))
-    );
+      })
+    ));
   }catch(e){
     console.error(e);
     bad(r,500,'Ошибка заявок');
@@ -977,7 +1095,9 @@ app.get('/api/admin/buyouts/:id/payment',admin,async(q,r)=>{
 
   try{
     const x=await pool.query(
-      'SELECT payment_details FROM buyout_requests WHERE id=$1',
+      `SELECT payment_details
+       FROM buyout_requests
+       WHERE id=$1`,
       [q.params.id]
     );
 
@@ -1012,23 +1132,25 @@ app.post('/api/admin/buyouts/:id/quote',admin,async(q,r)=>{
   }
 
   try{
-    const x=await pool.query(`
-      UPDATE buyout_requests
-      SET
-        offer_rub=$1,
-        status='quoted',
-        payment_details=NULL,
-        payment_saved_at=NULL,
-        updated_at=NOW()
-      WHERE id=$2
-        AND status IN ('pending','quoted')
-      RETURNING id,status,offer_rub
-    `,[price,q.params.id]);
+    const x=await pool.query(
+      `UPDATE buyout_requests
+       SET offer_rub=$1,
+           status='quoted',
+           payment_details=NULL,
+           payment_saved_at=NULL,
+           updated_at=NOW()
+       WHERE id=$2
+       AND status IN ('pending','quoted')
+       RETURNING id,status,offer_rub`,
+      [price,q.params.id]
+    );
 
-    x.rowCount
-      ?r.json(x.rows[0])
-      :bad(r,409,'Заявка недоступна');
-  }catch{
+    if(x.rowCount){
+      r.json(x.rows[0]);
+    }else{
+      bad(r,409,'Заявка недоступна');
+    }
+  }catch(e){
     bad(r,500,'Ошибка цены');
   }
 });
@@ -1042,37 +1164,40 @@ app.post('/api/sell/requests/:id/decision',user,async(q,r)=>{
   }
 
   try{
-    const status=
-      q.body.decision==='accept'
-        ?'accepted'
-        :'declined';
+    const status=q.body.decision==='accept'
+      ?'accepted'
+      :'declined';
 
-    const x=await pool.query(`
-      UPDATE buyout_requests
-      SET
-        status=$1,
-        seller_username=COALESCE($4,seller_username),
-        seller_name=COALESCE($5,seller_name),
-        updated_at=NOW()
-      WHERE id=$2
-        AND telegram_id=$3
-        AND status='quoted'
-      RETURNING id,status
-    `,[
-      status,
-      q.params.id,
-      q.telegramUser.id,
-      q.telegramUser.username||null,
+    const sellerName=[
+      q.telegramUser.first_name,
+      q.telegramUser.last_name
+    ].filter(Boolean).join(' ')||null;
+
+    const x=await pool.query(
+      `UPDATE buyout_requests
+       SET status=$1,
+           seller_username=COALESCE($4,seller_username),
+           seller_name=COALESCE($5,seller_name),
+           updated_at=NOW()
+       WHERE id=$2
+         AND telegram_id=$3
+         AND status='quoted'
+       RETURNING id,status`,
       [
-        q.telegramUser.first_name,
-        q.telegramUser.last_name
-      ].filter(Boolean).join(' ')||null
-    ]);
+        status,
+        q.params.id,
+        q.telegramUser.id,
+        q.telegramUser.username||null,
+        sellerName
+      ]
+    );
 
-    x.rowCount
-      ?r.json(x.rows[0])
-      :bad(r,409,'Заявка уже обработана');
-  }catch{
+    if(x.rowCount){
+      r.json(x.rows[0]);
+    }else{
+      bad(r,409,'Заявка уже обработана');
+    }
+  }catch(e){
     bad(r,500,'Ошибка решения');
   }
 });
@@ -1093,34 +1218,37 @@ app.post('/api/sell/requests/:id/payment',user,consent,async(q,r)=>{
   try{
     const sealed=encrypt(payment);
 
-    const x=await pool.query(`
-      UPDATE buyout_requests
-      SET
-        payment_details=$1,
-        payment_saved_at=NOW(),
-        updated_at=NOW()
-      WHERE id=$2
-        AND telegram_id=$3
-        AND status='accepted'
-        AND trade_opened_at IS NULL
-      RETURNING id
-    `,[
-      sealed,
-      q.params.id,
-      q.telegramUser.id
-    ]);
+    const x=await pool.query(
+      `UPDATE buyout_requests
+       SET payment_details=$1,
+           payment_saved_at=NOW(),
+           updated_at=NOW()
+       WHERE id=$2
+         AND telegram_id=$3
+         AND status='accepted'
+         AND trade_opened_at IS NULL
+       RETURNING id`,
+      [
+        sealed,
+        q.params.id,
+        q.telegramUser.id
+      ]
+    );
 
-    x.rowCount
-      ?r.json({
-          saved:true,
-          payment:publicPayment({
-            payment_details:sealed
-          })
+    if(x.rowCount){
+      r.json({
+        saved:true,
+        payment:publicPayment({
+          payment_details:sealed
         })
-      :bad(
-          r,409,
-          'Реквизиты можно изменить только до открытия обмена'
-        );
+      });
+    }else{
+      bad(
+        r,
+        409,
+        'Реквизиты можно изменить только до открытия обмена'
+      );
+    }
   }catch(e){
     console.error(e);
     bad(r,500,'Ошибка сохранения реквизитов');
@@ -1128,7 +1256,9 @@ app.post('/api/sell/requests/:id/payment',user,consent,async(q,r)=>{
 });
 
 function tradeUrl(){
-  const u=new URL(process.env.STEAM_TRADE_URL||'');
+  const u=new URL(
+    process.env.STEAM_TRADE_URL||''
+  );
 
   if(
     u.protocol!=='https:'||
@@ -1141,7 +1271,9 @@ function tradeUrl(){
       u.searchParams.get('token')||''
     )
   ){
-    throw Error('STEAM_TRADE_URL настроен неверно');
+    throw Error(
+      'STEAM_TRADE_URL настроен неверно'
+    );
   }
 
   return u.toString();
@@ -1153,15 +1285,20 @@ app.post('/api/sell/requests/:id/trade',user,consent,async(q,r)=>{
   }
 
   try{
-    const x=await pool.query(`
-      SELECT
-        id,steam_id,items,status,payment_details
-      FROM buyout_requests
-      WHERE id=$1 AND telegram_id=$2
-    `,[
-      q.params.id,
-      q.telegramUser.id
-    ]);
+    const x=await pool.query(
+      `SELECT
+        id,
+        steam_id,
+        items,
+        status,
+        payment_details
+       FROM buyout_requests
+       WHERE id=$1 AND telegram_id=$2`,
+      [
+        q.params.id,
+        q.telegramUser.id
+      ]
+    );
 
     if(!x.rowCount){
       return bad(r,404,'Заявка не найдена');
@@ -1175,39 +1312,45 @@ app.post('/api/sell/requests/:id/trade',user,consent,async(q,r)=>{
 
     if(!row.payment_details){
       return bad(
-        r,409,'Сначала сохрани реквизиты выплаты'
+        r,
+        409,
+        'Сначала сохрани реквизиты выплаты'
       );
     }
 
     if(
-      await steamFor(q.telegramUser.id)!==row.steam_id
+      await steamFor(q.telegramUser.id)!==
+      row.steam_id
     ){
       return bad(
-        r,409,'Подключи Steam из заявки'
+        r,
+        409,
+        'Подключи Steam из заявки'
       );
     }
 
     const url=tradeUrl();
 
-    await pool.query(`
-      UPDATE buyout_requests
-      SET
-        trade_opened_at=COALESCE(
-          trade_opened_at,NOW()
-        ),
-        updated_at=NOW()
-      WHERE id=$1
-        AND telegram_id=$2
-        AND status='accepted'
-    `,[
-      q.params.id,
-      q.telegramUser.id
-    ]);
+    await pool.query(
+      `UPDATE buyout_requests
+       SET trade_opened_at=COALESCE(
+         trade_opened_at,NOW()
+       ),
+       updated_at=NOW()
+       WHERE id=$1
+         AND telegram_id=$2
+         AND status='accepted'`,
+      [
+        q.params.id,
+        q.telegramUser.id
+      ]
+    );
 
     r.json({
       url,
       items:row.items,
-      warning:'Ссылка не подтверждает получение предметов'
+      warning:
+        'Ссылка не подтверждает получение предметов'
     });
   }catch(e){
     console.error(e);
@@ -1224,57 +1367,75 @@ app.post('/api/admin/buyouts/:id/received',admin,async(q,r)=>{
   }
 
   try{
-    const x=await pool.query(`
-      UPDATE buyout_requests
-      SET
-        status='received',
-        received_at=NOW(),
-        payout_due_at=NOW()+INTERVAL '7 days',
-        received_by=$1,
-        updated_at=NOW()
-      WHERE id=$2
-        AND status='accepted'
-        AND payment_details IS NOT NULL
-      RETURNING
-        id,status,received_at,payout_due_at
-    `,[
-      q.admin.id,
-      q.params.id
-    ]);
+    const x=await pool.query(
+      `UPDATE buyout_requests
+       SET status='received',
+           received_at=NOW(),
+           payout_due_at=NOW()+INTERVAL '7 days',
+           received_by=$1,
+           updated_at=NOW()
+       WHERE id=$2
+         AND status='accepted'
+         AND payment_details IS NOT NULL
+       RETURNING
+         id,
+         status,
+         received_at,
+         payout_due_at`,
+      [
+        q.admin.id,
+        q.params.id
+      ]
+    );
 
-    x.rowCount
-      ?r.json(x.rows[0])
-      :bad(
-          r,409,
-          'Заявка не готова к подтверждению'
-        );
-  }catch{
+    if(x.rowCount){
+      r.json(x.rows[0]);
+    }else{
+      bad(
+        r,
+        409,
+        'Заявка не готова к подтверждению'
+      );
+    }
+  }catch(e){
     bad(r,500,'Ошибка подтверждения');
   }
 });
 
-/* Статистика выплат */
-
+/*
+  Выплаты появляются в отдельной очереди
+  только после подтверждения получения скинов.
+*/
 app.get('/api/admin/payouts',admin,async(q,r)=>{
   try{
     const rows=(
-      await pool.query(`
-        SELECT
-          id,telegram_id,seller_username,
-          seller_name,steam_id,items,status,
-          offer_rub,received_at,payout_due_at,
-          paid_at,payment_details
-        FROM buyout_requests
-        WHERE status IN ('received','paid')
-        ORDER BY received_at DESC
-        LIMIT 500
-      `)
+      await pool.query(
+        `SELECT
+          id,
+          telegram_id,
+          seller_username,
+          seller_name,
+          steam_id,
+          items,
+          status,
+          offer_rub,
+          received_at,
+          payout_due_at,
+          paid_at,
+          payment_details
+         FROM buyout_requests
+         WHERE status IN ('received','paid')
+         ORDER BY received_at DESC
+         LIMIT 500`
+      )
     ).rows;
 
     const payments=rows.map(
       ({payment_details,...row})=>({
         ...row,
-        payment:publicPayment({payment_details})
+        payment:publicPayment({
+          payment_details
+        })
       })
     );
 
@@ -1286,69 +1447,91 @@ app.get('/api/admin/payouts',admin,async(q,r)=>{
       x=>x.status==='paid'
     );
 
+    const stats={
+      pendingCount:pending.length,
+      pendingRub:pending.reduce(
+        (a,x)=>a+Number(x.offer_rub||0),0
+      ),
+      paidCount:paid.length,
+      paidRub:paid.reduce(
+        (a,x)=>a+Number(x.offer_rub||0),0
+      )
+    };
+
     r.set('Cache-Control','no-store');
 
     r.json({
       payments,
-      stats:{
-        pendingCount:pending.length,
-        pendingRub:pending.reduce(
-          (a,x)=>a+Number(x.offer_rub||0),0
-        ),
-        paidCount:paid.length,
-        paidRub:paid.reduce(
-          (a,x)=>a+Number(x.offer_rub||0),0
-        )
-      }
+      stats
     });
   }catch(e){
     console.error('Payouts:',e);
-    bad(r,500,'Ошибка статистики выплат');
+    bad(
+      r,
+      500,
+      'Ошибка статистики выплат'
+    );
   }
 });
 
-/* Баланс пользователя */
-
 app.get('/api/balance',user,async(q,r)=>{
   try{
-    const x=await pool.query(`
-      SELECT
-        COALESCE(SUM(amount_rub),0)::bigint AS balance
-      FROM balance_ledger
-      WHERE telegram_id=$1
-    `,[q.telegramUser.id]);
+    const x=await pool.query(
+      `SELECT
+         COALESCE(SUM(amount_rub),0)::bigint
+         AS balance
+       FROM balance_ledger
+       WHERE telegram_id=$1`,
+      [q.telegramUser.id]
+    );
 
     r.json({
       balanceRub:Number(x.rows[0].balance)
     });
-  }catch{
+  }catch(e){
     bad(r,500,'Ошибка баланса');
   }
 });
 
-/* Завершение выплаты */
-
+/*
+  Завершение выплаты:
+  - только администратором;
+  - только после семи суток;
+  - баланс зачисляется в рамках транзакции;
+  - внешняя выплата отмечается вручную.
+*/
 app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
   if(
     !validId(q.params.id)||
     q.body?.confirmed!==true
   ){
-    return bad(r,400,'Требуется подтверждение');
+    return bad(
+      r,
+      400,
+      'Требуется подтверждение'
+    );
   }
 
-  const client=await pool.connect();
+  let client;
 
   try{
+    client=await pool.connect();
+
     await client.query('BEGIN');
 
-    const x=await client.query(`
-      SELECT
-        id,telegram_id,offer_rub,status,
-        payout_due_at,payment_details
-      FROM buyout_requests
-      WHERE id=$1
-      FOR UPDATE
-    `,[q.params.id]);
+    const x=await client.query(
+      `SELECT
+        id,
+        telegram_id,
+        offer_rub,
+        status,
+        payout_due_at,
+        payment_details
+       FROM buyout_requests
+       WHERE id=$1
+       FOR UPDATE`,
+      [q.params.id]
+    );
 
     if(
       !x.rowCount||
@@ -1356,50 +1539,63 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       !x.rows[0].payment_details
     ){
       await client.query('ROLLBACK');
+
       return bad(
-        r,409,'Заявка недоступна для выплаты'
+        r,
+        409,
+        'Заявка недоступна для выплаты'
       );
     }
 
     const row=x.rows[0];
 
     if(
-      new Date(row.payout_due_at).getTime()>Date.now()
+      new Date(row.payout_due_at).getTime()>
+      Date.now()
     ){
       await client.query('ROLLBACK');
+
       return bad(
-        r,409,'Семь суток ещё не истекли'
+        r,
+        409,
+        'Семь суток ещё не истекли'
       );
     }
 
-    const payment=decrypt(row.payment_details);
+    const payment=decrypt(
+      row.payment_details
+    );
 
     if(payment.method==='BALANCE'){
-      await client.query(`
-        INSERT INTO balance_ledger(
-          telegram_id,request_id,amount_rub
+      await client.query(
+        `INSERT INTO balance_ledger(
+          telegram_id,
+          request_id,
+          amount_rub
         )
         VALUES($1,$2,$3)
-        ON CONFLICT(request_id) DO NOTHING
-      `,[
-        row.telegram_id,
-        row.id,
-        row.offer_rub
-      ]);
+        ON CONFLICT(request_id)
+        DO NOTHING`,
+        [
+          row.telegram_id,
+          row.id,
+          row.offer_rub
+        ]
+      );
     }
 
-    await client.query(`
-      UPDATE buyout_requests
-      SET
-        status='paid',
-        paid_at=NOW(),
-        paid_by=$1,
-        updated_at=NOW()
-      WHERE id=$2
-    `,[
-      q.admin.id,
-      row.id
-    ]);
+    await client.query(
+      `UPDATE buyout_requests
+       SET status='paid',
+           paid_at=NOW(),
+           paid_by=$1,
+           updated_at=NOW()
+       WHERE id=$2`,
+      [
+        q.admin.id,
+        row.id
+      ]
+    );
 
     await client.query('COMMIT');
 
@@ -1408,18 +1604,40 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       method:payment.method
     });
   }catch(e){
-    await client.query('ROLLBACK');
-    console.error('Payout completion:',e);
-    bad(r,500,'Не удалось завершить выплату');
+    if(client){
+      try{
+        await client.query('ROLLBACK');
+      }catch(rollbackError){
+        console.error(
+          'Rollback failed:',
+          rollbackError
+        );
+      }
+    }
+
+    console.error(
+      'Payout completion:',
+      e
+    );
+
+    bad(
+      r,
+      500,
+      'Не удалось завершить выплату'
+    );
   }finally{
-    client.release();
+    if(client){
+      client.release();
+    }
   }
 });
 
 app.use(express.static(DIR));
 
 app.get('/',(_q,r)=>{
-  r.sendFile(path.join(DIR,'index.html'));
+  r.sendFile(
+    path.join(DIR,'index.html')
+  );
 });
 
 async function start(){
@@ -1430,19 +1648,31 @@ async function start(){
     'PAYMENT_DATA_KEY'
   ]){
     if(!process.env[v]){
-      throw Error('Не задана переменная '+v);
+      throw Error(
+        'Не задана переменная '+v
+      );
     }
   }
 
   key();
+
   await initDb();
 
-  app.listen(PORT,'0.0.0.0',()=>{
-    console.log('REZZKIY MARKET port '+PORT);
-  });
+  app.listen(
+    PORT,
+    '0.0.0.0',
+    ()=>{
+      console.log(
+        'REZZKIY MARKET port '+PORT
+      );
+    }
+  );
 }
 
 start().catch(e=>{
-  console.error('Startup:',e.message);
+  console.error(
+    'Startup:',
+    e.message
+  );
   process.exit(1);
 });
