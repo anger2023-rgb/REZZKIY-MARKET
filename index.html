@@ -1,53 +1,270 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#090a0d">
 <title>REZZKIY MARKET</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
+:root{
+--bg:#090a0d;
+--panel:#191b20;
+--line:#303238;
+--orange:#ff7900;
+--muted:#aaa;
+}
 *{box-sizing:border-box}
-body{margin:0;background:#090a0d;color:white;font-family:Arial,sans-serif}
-header{padding:20px;text-align:center;font-weight:bold;border-bottom:1px solid #333}
-.orange-text{color:#ff7900}
-main{padding:16px 16px 100px;max-width:600px;margin:auto}
-h2{font-size:21px}
-.banner{background:linear-gradient(120deg,#50200a,#151515);border:1px solid #70310d;border-radius:15px;padding:25px 18px}
-.banner h1{font-size:30px;margin:0;font-style:italic}
-.banner p{color:#ccc;font-size:13px}
-.btn{background:#ff7900;color:white;border:0;border-radius:10px;padding:14px;font-weight:bold;cursor:pointer}
-.actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0}
-.actions button{background:#191b20;color:white;border:1px solid #333;border-radius:12px;padding:16px 3px;font-size:12px}
-.actions b{display:block;color:#ff7900;font-size:24px;margin-bottom:8px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.card{background:#191b20;border:1px solid #333;border-radius:12px;padding:10px}
-.card img{width:100%;height:115px;object-fit:contain}
-.card h3{font-size:13px;margin:8px 0 3px}
-.card small{color:#aaa}
-.price{font-weight:bold;margin:10px 0}
-.card button{width:100%}
-input,select{width:100%;padding:13px;background:#1b1d22;color:white;border:1px solid #444;border-radius:9px;margin:7px 0 14px}
-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#111216;border-top:1px solid #333;padding:12px 2px max(12px,env(safe-area-inset-bottom))}
-nav button{flex:1;background:none;border:0;color:#aaa;font-size:11px}
-nav button.active{color:#ff7900}
-nav b{display:block;font-size:20px;margin-bottom:5px}
+body{
+margin:0;
+background:var(--bg);
+color:white;
+font:14px -apple-system,BlinkMacSystemFont,Arial,sans-serif;
+}
+button,input,select{font:inherit}
+button{cursor:pointer}
+header{
+text-align:center;
+padding:17px;
+border-bottom:1px solid var(--line);
+font-weight:800;
+letter-spacing:.5px;
+}
+header span{color:var(--orange)}
+main{
+max-width:600px;
+margin:auto;
+padding:15px 15px 100px;
+}
+h2{font-size:21px;margin:20px 0 14px}
+h3{font-size:16px}
+.muted{color:var(--muted)}
+.orange{color:var(--orange)}
+.btn{
+background:linear-gradient(#ff901b,#ff6800);
+border:0;
+color:white;
+padding:14px;
+border-radius:11px;
+font-weight:700;
+}
+.btn:active{opacity:.8}
+.full{width:100%}
+.banner{
+position:relative;
+overflow:hidden;
+background:linear-gradient(120deg,#4b1908,#151515 75%);
+border:1px solid #80310e;
+border-radius:15px;
+padding:26px 19px;
+min-height:225px;
+}
+.banner:after{
+content:"";
+position:absolute;
+right:-60px;
+top:-50px;
+width:230px;
+height:230px;
+border-radius:50%;
+background:radial-gradient(circle,#ff790055,transparent 70%);
+pointer-events:none;
+}
+.banner h1{
+font-size:32px;
+font-style:italic;
+line-height:1;
+margin:0;
+}
+.banner h2{margin:17px 0}
+.banner p{
+color:#ddd;
+font-size:13px;
+max-width:230px;
+line-height:1.5;
+}
+.actions{
+display:grid;
+grid-template-columns:repeat(4,1fr);
+gap:8px;
+margin:20px 0;
+}
+.actions button{
+background:var(--panel);
+border:1px solid var(--line);
+border-radius:12px;
+color:white;
+padding:15px 2px;
+font-size:11px;
+}
+.actions b{
+display:block;
+font-size:23px;
+color:var(--orange);
+margin-bottom:9px;
+}
+.grid{
+display:grid;
+grid-template-columns:repeat(2,minmax(0,1fr));
+gap:12px;
+}
+.card{
+background:var(--panel);
+border:1px solid var(--line);
+border-radius:13px;
+padding:10px;
+overflow:hidden;
+}
+.weapon{
+height:130px;
+display:flex;
+align-items:center;
+justify-content:center;
+background:radial-gradient(ellipse,#34363b,#101114);
+border-radius:9px;
+}
+.weapon img{
+width:100%;
+height:120px;
+object-fit:contain;
+}
+.card h3{
+font-size:13px;
+margin:10px 0 4px;
+overflow-wrap:anywhere;
+}
+.card small{color:#aaa;font-size:11px}
+.price{
+font-size:17px;
+font-weight:800;
+margin:10px 0;
+}
+.card .btn{width:100%;padding:11px}
+input,select{
+width:100%;
+padding:13px;
+background:#1b1d22;
+color:white;
+border:1px solid #444;
+border-radius:9px;
+margin:8px 0 15px;
+outline:none;
+}
+input:focus{border-color:var(--orange)}
+nav{
+position:fixed;
+bottom:0;
+left:0;
+right:0;
+z-index:20;
+display:flex;
+background:#111216;
+border-top:1px solid #333;
+padding:12px 2px max(12px,env(safe-area-inset-bottom));
+}
+nav button{
+flex:1;
+background:none;
+border:0;
+color:#aaa;
+font-size:10px;
+}
+nav button.active{color:var(--orange)}
+nav b{
+display:block;
+font-size:21px;
+margin-bottom:5px;
+}
 .page{display:none}
 .page.active{display:block}
-.item{background:#191b20;padding:15px;border-radius:10px;margin:10px 0}
-.total{display:flex;justify-content:space-between;margin:20px 0;font-weight:bold}
+.item{
+background:var(--panel);
+border:1px solid var(--line);
+border-radius:11px;
+padding:14px;
+margin:10px 0;
+}
+.row{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:10px;
+}
+.total{
+display:flex;
+justify-content:space-between;
+font-weight:bold;
+margin:20px 0;
+font-size:17px;
+}
+.secondary{
+background:#303238;
+border:0;
+color:white;
+border-radius:9px;
+padding:12px;
+}
+.chips{
+display:flex;
+gap:8px;
+overflow-x:auto;
+margin:12px 0;
+}
+.chip{
+white-space:nowrap;
+background:#202126;
+border:1px solid #333;
+color:white;
+border-radius:25px;
+padding:10px 14px;
+}
+.chip.active{
+background:var(--orange);
+border-color:var(--orange);
+}
+.hero-weapon{
+height:230px;
+background:radial-gradient(ellipse,#4b1917,#101114 75%);
+display:flex;
+align-items:center;
+justify-content:center;
+border-radius:15px;
+}
+.hero-weapon img{
+width:100%;
+height:220px;
+object-fit:contain;
+}
+.avatar{
+width:55px;
+height:55px;
+border-radius:50%;
+display:grid;
+place-items:center;
+background:linear-gradient(135deg,#7942ff,#ff7900);
+font-size:25px;
+font-weight:bold;
+}
+.profile-card{
+background:linear-gradient(120deg,#292126,#17191e);
+border:1px solid #383838;
+border-radius:14px;
+padding:20px;
+}
 </style>
 </head>
 <body>
 
-<header>REZZKIY <span class="orange-text">MARKET</span></header>
+<header>REZZKIY <span>MARKET</span></header>
 
 <main>
 
 <section id="home" class="page active">
 <div class="banner">
-<h1>REZZKIY<br><span class="orange-text">MARKET</span></h1>
+<h1>REZZKIY<br><span class="orange">MARKET</span></h1>
 <h2>CS2 SKINS</h2>
-<p>Покупай и продавай скины CS2</p>
+<p>Покупай и продавай скины CS2 в нашем маркетплейсе</p>
 <button class="btn" onclick="go('catalog')">Открыть каталог</button>
 </div>
 
@@ -58,21 +275,40 @@ nav b{display:block;font-size:20px;margin-bottom:5px}
 <button onclick="go('profile')"><b>◉</b>Профиль</button>
 </div>
 
+<div class="row">
 <h2>Популярное</h2>
+<button class="secondary" onclick="go('catalog')">Смотреть все ›</button>
+</div>
 <div id="popular" class="grid"></div>
 </section>
 
 <section id="catalog" class="page">
-<h2>Каталог</h2>
+<h2>Каталог скинов</h2>
 <input id="search" placeholder="Поиск по скинам..." oninput="render()">
-<select id="filter" onchange="render()">
-<option value="">Все скины</option>
-<option>AK-47</option>
-<option>AWP</option>
-<option>M4A4</option>
-<option>USP-S</option>
-</select>
+<div class="chips" id="chips">
+<button class="chip active" onclick="filterType('',this)">Все</button>
+<button class="chip" onclick="filterType('AK-47',this)">AK-47</button>
+<button class="chip" onclick="filterType('AWP',this)">AWP</button>
+<button class="chip" onclick="filterType('M4A4',this)">M4A4</button>
+<button class="chip" onclick="filterType('USP-S',this)">USP-S</button>
+</div>
 <div id="products" class="grid"></div>
+</section>
+
+<section id="details" class="page">
+<button class="secondary" onclick="go('catalog')">← Назад</button>
+<div class="hero-weapon" id="detailImage"></div>
+<h2 id="detailName"></h2>
+<p class="muted" id="detailCondition"></p>
+<h2 id="detailPrice"></h2>
+<button class="btn full" id="detailBuy">В корзину</button>
+<button class="secondary full" style="margin-top:10px" onclick="go('cart')">Перейти в корзину</button>
+<h3>Информация о скине</h3>
+<div class="item">
+<p>Игра: Counter-Strike 2</p>
+<p id="detailWear"></p>
+<p class="muted">Тестовый товар. Реальная передача предметов Steam пока не подключена.</p>
+</div>
 </section>
 
 <section id="cart" class="page">
@@ -82,16 +318,17 @@ nav b{display:block;font-size:20px;margin-bottom:5px}
 <span>Итого:</span>
 <span id="total">0 ₽</span>
 </div>
-<button class="btn" style="width:100%" onclick="checkout()">Оформить заказ</button>
+<button class="btn full" onclick="checkout()">Оформить заказ</button>
+<p class="muted">Оплата пока работает только в демонстрационном режиме.</p>
 </section>
 
 <section id="sell" class="page">
 <h2>Продать скин</h2>
-<p>Выставьте свой скин на продажу</p>
+<p class="muted">Создай тестовое объявление. Инвентарь Steam подключим отдельно.</p>
 <label>Название скина</label>
 <input id="skinName" placeholder="AK-47 | Redline">
 <label>Цена продажи (₽)</label>
-<input id="skinPrice" type="number" placeholder="1290">
+<input id="skinPrice" type="number" min="1" placeholder="1290">
 <label>Состояние</label>
 <select id="condition">
 <option>Factory New</option>
@@ -100,31 +337,36 @@ nav b{display:block;font-size:20px;margin-bottom:5px}
 <option>Well-Worn</option>
 <option>Battle-Scarred</option>
 </select>
-<button class="btn" style="width:100%" onclick="sell()">Выставить на продажу</button>
-<p style="color:#aaa;font-size:12px">Демонстрационный режим. Steam пока не подключён.</p>
+<button class="btn full" onclick="sell()">Выставить на продажу</button>
 </section>
 
 <section id="profile" class="page">
 <h2>Профиль</h2>
-<div class="item">
-<h3 id="username">Игрок</h3>
-<p id="userid">Telegram ID</p>
+<div class="profile-card">
+<div class="row">
+<div class="avatar" id="avatar">R</div>
+<div style="flex:1">
+<strong id="username">REZZKIY</strong>
+<p class="muted" id="userid">Демо-профиль</p>
 </div>
-<div class="item">
-<p>Баланс</p>
+</div>
+<hr style="border:0;border-top:1px solid #444;margin:20px 0">
+<p class="muted">Баланс</p>
 <h2>0 ₽</h2>
-<button class="btn" onclick="alert('Платежи пока не подключены')">Пополнить</button>
+<button class="secondary" onclick="alert('Пополнение пока не подключено')">Пополнить</button>
+<button class="secondary" onclick="alert('Вывод пока не подключён')">Вывести</button>
 </div>
-<div class="item">Мои заказы</div>
-<div class="item">Мои продажи</div>
-<div class="item">Привязка Steam — скоро</div>
-<div class="item">Поддержка</div>
+<h2>Мой аккаунт</h2>
+<div class="item" onclick="showOrders()">Мои заказы →</div>
+<div class="item" onclick="showSales()">Мои продажи →</div>
+<div class="item" onclick="alert('Steam пока не подключён')">Привязка Steam →</div>
+<div class="item" onclick="alert('Поддержка пока не подключена')">Поддержка →</div>
 </section>
 
 </main>
 
 <nav>
-<button data-page="home" onclick="go('home')" class="active"><b>⌂</b>Главная</button>
+<button data-page="home" class="active" onclick="go('home')"><b>⌂</b>Главная</button>
 <button data-page="catalog" onclick="go('catalog')"><b>▦</b>Каталог</button>
 <button data-page="sell" onclick="go('sell')"><b>◇</b>Продать</button>
 <button data-page="cart" onclick="go('cart')"><b>▣</b>Корзина</button>
@@ -139,31 +381,90 @@ tg.expand();
 }
 
 const skins=[
-{name:"AK-47 | Redline",condition:"Field-Tested",price:1290,img:""},
-{name:"AWP | Asiimov",condition:"Battle-Scarred",price:8990,img:""},
-{name:"M4A4 | Emperor",condition:"Minimal Wear",price:4390,img:""},
-{name:"USP-S | Kill Confirmed",condition:"Field-Tested",price:3250,img:""}
+{
+id:1,
+name:"AK-47 | Redline",
+condition:"Field-Tested",
+price:1290,
+image:"https://community.cloudflare.steamstatic.com/economy/image/class/730/310776677/360fx360f"
+},
+{
+id:2,
+name:"AWP | Asiimov",
+condition:"Battle-Scarred",
+price:8990,
+image:"https://community.cloudflare.steamstatic.com/economy/image/class/730/310776657/360fx360f"
+},
+{
+id:3,
+name:"M4A4 | The Emperor",
+condition:"Minimal Wear",
+price:4390,
+image:""
+},
+{
+id:4,
+name:"USP-S | Kill Confirmed",
+condition:"Field-Tested",
+price:3250,
+image:""
+}
 ];
 
+let listings=[...skins];
 let cart=[];
+let orders=[];
+let sales=[];
+let selectedType="";
+
+function money(n){
+return Number(n).toLocaleString("ru-RU")+" ₽";
+}
 
 function go(id){
-document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
+document.querySelectorAll(".page").forEach(p=>{
+p.classList.remove("active");
+});
 document.getElementById(id).classList.add("active");
+
 document.querySelectorAll("nav button").forEach(b=>{
 b.classList.toggle("active",b.dataset.page===id);
 });
+
 if(id==="cart")renderCart();
+if(id==="catalog")render();
 window.scrollTo(0,0);
 }
 
-function productCard(s,i){
+function weaponImage(s){
+const box=document.createElement("div");
+box.className="weapon";
+
+if(s.image){
+const img=document.createElement("img");
+img.src=s.image;
+img.alt=s.name;
+img.onerror=()=>{
+box.textContent="CS2";
+box.style.color="#ff7900";
+img.remove();
+};
+box.appendChild(img);
+}else{
+box.textContent="CS2";
+box.style.color="#ff7900";
+box.style.fontWeight="bold";
+box.style.fontSize="25px";
+}
+return box;
+}
+
+function productCard(s){
 const card=document.createElement("div");
 card.className="card";
 
-const image=document.createElement("div");
-image.style.cssText="height:115px;display:grid;place-items:center;background:#111;border-radius:8px;color:#ff7900;font-size:35px";
-image.textContent="▰";
+const image=weaponImage(s);
+image.onclick=()=>details(s.id);
 card.appendChild(image);
 
 const title=document.createElement("h3");
@@ -176,33 +477,68 @@ card.appendChild(condition);
 
 const price=document.createElement("div");
 price.className="price";
-price.textContent=s.price.toLocaleString("ru-RU")+" ₽";
+price.textContent=money(s.price);
 card.appendChild(price);
 
 const btn=document.createElement("button");
 btn.className="btn";
 btn.textContent="В корзину";
-btn.onclick=()=>addCart(i);
+btn.onclick=()=>addCart(s.id);
 card.appendChild(btn);
 
 return card;
 }
 
 function render(){
-const query=document.getElementById("search").value.toLowerCase();
-const filter=document.getElementById("filter").value;
-const products=document.getElementById("products");
-products.replaceChildren();
+const q=document.getElementById("search").value.toLowerCase();
+const box=document.getElementById("products");
+box.replaceChildren();
 
-skins.forEach((s,i)=>{
-if(s.name.toLowerCase().includes(query)&&(!filter||s.name.includes(filter))){
-products.appendChild(productCard(s,i));
+listings.filter(s=>
+s.name.toLowerCase().includes(q)&&
+(!selectedType||s.name.includes(selectedType))
+).forEach(s=>box.appendChild(productCard(s)));
+
+if(!box.children.length){
+box.textContent="Скины не найдены";
 }
+}
+
+function filterType(type,btn){
+selectedType=type;
+document.querySelectorAll(".chip").forEach(x=>{
+x.classList.remove("active");
 });
+btn.classList.add("active");
+render();
 }
 
-function addCart(i){
-cart.push(i);
+function details(id){
+const s=listings.find(x=>x.id===id);
+if(!s)return;
+
+document.getElementById("detailName").textContent=s.name;
+document.getElementById("detailCondition").textContent=s.condition;
+document.getElementById("detailPrice").textContent=money(s.price);
+document.getElementById("detailWear").textContent="Состояние: "+s.condition;
+
+const image=document.getElementById("detailImage");
+image.replaceChildren();
+
+const weapon=weaponImage(s);
+weapon.style.width="100%";
+weapon.style.height="100%";
+image.appendChild(weapon);
+
+document.getElementById("detailBuy").onclick=()=>addCart(s.id);
+go("details");
+}
+
+function addCart(id){
+cart.push(id);
+if(tg?.HapticFeedback){
+tg.HapticFeedback.notificationOccurred("success");
+}
 alert("Скин добавлен в корзину");
 }
 
@@ -212,23 +548,24 @@ box.replaceChildren();
 let total=0;
 
 cart.forEach((id,index)=>{
-const s=skins[id];
+const s=listings.find(x=>x.id===id);
+if(!s)return;
 total+=s.price;
 
 const row=document.createElement("div");
 row.className="item";
 
-const name=document.createElement("strong");
-name.textContent=s.name;
-row.appendChild(name);
+const title=document.createElement("strong");
+title.textContent=s.name;
+row.appendChild(title);
 
 const price=document.createElement("p");
-price.textContent=s.price.toLocaleString("ru-RU")+" ₽";
+price.textContent=money(s.price);
 row.appendChild(price);
 
 const remove=document.createElement("button");
+remove.className="secondary";
 remove.textContent="Удалить";
-remove.className="btn";
 remove.onclick=()=>{
 cart.splice(index,1);
 renderCart();
@@ -237,7 +574,7 @@ row.appendChild(remove);
 box.appendChild(row);
 });
 
-document.getElementById("total").textContent=total.toLocaleString("ru-RU")+" ₽";
+document.getElementById("total").textContent=money(total);
 
 if(cart.length===0){
 box.textContent="Корзина пуста";
@@ -249,9 +586,15 @@ if(cart.length===0){
 alert("Корзина пуста");
 return;
 }
-alert("Тестовый заказ создан. Реальная оплата пока не подключена.");
+
+orders.push({
+items:[...cart],
+date:new Date().toLocaleString("ru-RU")
+});
+
 cart=[];
 renderCart();
+alert("Тестовый заказ создан! Реальные платежи пока отключены.");
 }
 
 function sell(){
@@ -260,26 +603,59 @@ const price=Number(document.getElementById("skinPrice").value);
 const condition=document.getElementById("condition").value;
 
 if(!name||!Number.isFinite(price)||price<=0){
-alert("Введите название и корректную цену");
+alert("Введите название и правильную цену");
 return;
 }
 
-skins.push({name,price,condition,img:""});
+const listing={
+id:Date.now(),
+name,
+price,
+condition,
+image:""
+};
+
+listings.push(listing);
+sales.push(listing);
+
 document.getElementById("skinName").value="";
 document.getElementById("skinPrice").value="";
+
 render();
 alert("Тестовое объявление добавлено");
 go("catalog");
 }
 
-if(tg?.initDataUnsafe?.user){
-const user=tg.initDataUnsafe.user;
-document.getElementById("username").textContent=user.first_name||"Игрок";
+function showOrders(){
+if(!orders.length){
+alert("Заказов пока нет");
+return;
+}
+alert("Тестовых заказов: "+orders.length);
+}
+
+function showSales(){
+if(!sales.length){
+alert("Продаж пока нет");
+return;
+}
+alert("Ваших объявлений: "+sales.length);
+}
+
+const user=tg?.initDataUnsafe?.user;
+if(user){
+document.getElementById("username").textContent=
+user.username?"@"+user.username:user.first_name||"Игрок";
 document.getElementById("userid").textContent="Telegram ID: "+user.id;
+document.getElementById("avatar").textContent=
+(user.first_name||"R").charAt(0).toUpperCase();
 }
 
 const popular=document.getElementById("popular");
-skins.slice(0,4).forEach((s,i)=>popular.appendChild(productCard(s,i)));
+listings.slice(0,4).forEach(s=>{
+popular.appendChild(productCard(s));
+});
+
 render();
 </script>
 </body>
