@@ -9,6 +9,7 @@ const app = express();
 const { Pool } = pg;
 const PORT = Number(process.env.PORT || 8080);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const SITE_URL = 'https://rezzkiy-market-production-dbf4.up.railway.app';
 const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
 const OPENID_NS = 'http://specs.openid.net/auth/2.0';
@@ -23,7 +24,8 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes('.railway.internal') ||
        process.env.DATABASE_URL?.includes('localhost') ||
        process.env.DATABASE_URL?.includes('127.0.0.1')
-    ? false : { rejectUnauthorized: false }
+    ? false
+    : { rejectUnauthorized: false }
 });
 
 const categories = {
@@ -198,6 +200,26 @@ async function initDatabase() {
     )
   `);
 
+  await pool.query(`
+    ALTER TABLE buyout_requests
+    ADD COLUMN IF NOT EXISTS trade_opened_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE buyout_requests
+    ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE buyout_requests
+    ADD COLUMN IF NOT EXISTS payout_due_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE buyout_requests
+    ADD COLUMN IF NOT EXISTS received_by BIGINT
+  `);
+
   console.log('Database ready');
 }
 
@@ -214,7 +236,6 @@ app.get('/api/products', async (_req, res) => {
     const result = await pool.query(
       'SELECT * FROM products ORDER BY created_at DESC, id DESC'
     );
-
     res.json(result.rows);
   } catch (err) {
     console.error('Products:', err.message);
@@ -225,10 +246,7 @@ app.get('/api/products', async (_req, res) => {
 });
 
 app.get('/api/admin/me', requireAdmin, (req, res) => {
-  res.json({
-    admin: true,
-    id: req.admin.id
-  });
+  res.json({ admin: true, id: req.admin.id });
 });
 
 app.post('/api/images', requireAdmin, async (req, res) => {
@@ -345,12 +363,7 @@ app.get('/api/images/:id', async (req, res) => {
 app.post('/api/products', requireAdmin, async (req, res) => {
   try {
     const {
-      weapon,
-      skin,
-      condition,
-      price,
-      quantity,
-      image_url
+      weapon, skin, condition, price, quantity, image_url
     } = req.body || {};
 
     const category = getCategory(weapon);
@@ -398,13 +411,8 @@ app.post('/api/products', requireAdmin, async (req, res) => {
       VALUES($1,$2,$3,$4,$5,$6,$7)
       RETURNING *
     `, [
-      weapon,
-      skin.trim(),
-      category,
-      condition,
-      price,
-      quantity,
-      image_url
+      weapon, skin.trim(), category, condition,
+      price, quantity, image_url
     ]);
 
     res.status(201).json(result.rows[0]);
@@ -485,9 +493,7 @@ app.post('/api/steam/connect', requireTelegram, async (req, res) => {
       url.searchParams.set(key, value);
     }
 
-    res.json({
-      url: url.toString()
-    });
+    res.json({ url: url.toString() });
   } catch (err) {
     console.error('Steam connect:', err.message);
     res.status(500).json({
@@ -601,6 +607,69 @@ app.get('/auth/steam/callback', async (req, res) => {
   }
 });
 
+/* АВАТАРКА STEAM */
+
+const steamProfileCache = new Map();
+
+async function getSteamAvatar(steamId) {
+  const cached = steamProfileCache.get(steamId);
+
+  if (cached && cached.expires > Date.now()) {
+    return cached.avatar;
+  }
+
+  let avatar = '';
+
+  try {
+    const profileUrl =
+      'https://steamcommunity.com/profiles/' +
+      encodeURIComponent(steamId) +
+      '/?xml=1';
+
+    const response = await fetch(profileUrl, {
+      headers: {
+        Accept: 'application/xml, text/xml'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (response.ok) {
+      const xml = await response.text();
+
+      const match = xml.match(
+        /<avatarFull><!\[CDATA\[(https:\/\/[^<]+)\]\]><\/avatarFull>/
+      ) || xml.match(
+        /<avatarFull>(https:\/\/[^<]+)<\/avatarFull>/
+      );
+
+      if (match) {
+        const candidate = match[1].replace(/&amp;/g, '&');
+        const url = new URL(candidate);
+
+        if (
+          url.protocol === 'https:' &&
+          [
+            'avatars.steamstatic.com',
+            'steamcdn-a.akamaihd.net',
+            'avatars.akamai.steamstatic.com'
+          ].includes(url.hostname)
+        ) {
+          avatar = url.toString();
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Steam avatar:', err.message);
+  }
+
+  steamProfileCache.set(steamId, {
+    avatar,
+    expires: Date.now() + (avatar ? 3600000 : 300000)
+  });
+
+  return avatar;
+}
+
 app.get('/api/steam/me', requireTelegram, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -609,9 +678,21 @@ app.get('/api/steam/me', requireTelegram, async (req, res) => {
       WHERE telegram_id=$1
     `, [req.telegramUser.id]);
 
+    if (!result.rowCount) {
+      return res.json({
+        connected: false,
+        steamId: null,
+        avatar: ''
+      });
+    }
+
+    const steamId = result.rows[0].steam_id;
+    const avatar = await getSteamAvatar(steamId);
+
     res.json({
-      connected: result.rowCount > 0,
-      steamId: result.rows[0]?.steam_id || null
+      connected: true,
+      steamId,
+      avatar
     });
   } catch (err) {
     console.error('Steam me:', err.message);
@@ -620,6 +701,8 @@ app.get('/api/steam/me', requireTelegram, async (req, res) => {
     });
   }
 });
+
+/* ИНВЕНТАРЬ */
 
 const inventoryCache = new Map();
 const inventoryRequests = new Map();
@@ -650,9 +733,7 @@ async function fetchInventory(steamId) {
     }
 
     const response = await fetch(url, {
-      headers: {
-        Accept: 'application/json'
-      },
+      headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(12000)
     });
 
@@ -739,6 +820,8 @@ async function fetchInventory(steamId) {
   return all;
 }
 
+/* ПРАВИЛА */
+
 app.get('/api/sell/rules', requireTelegram, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -822,9 +905,7 @@ app.get(
   requireSellConsent,
   async (req, res) => {
     try {
-      const steamId = await steamForUser(
-        req.telegramUser.id
-      );
+      const steamId = await steamForUser(req.telegramUser.id);
 
       if (!steamId) {
         return res.status(400).json({
@@ -832,12 +913,24 @@ app.get(
         });
       }
 
-      const previous =
-        inventoryRequests.get(steamId) || 0;
+      const previous = inventoryRequests.get(steamId) || 0;
+      const cached = inventoryCache.get(String(req.telegramUser.id));
+
+      if (
+        cached &&
+        cached.steamId === steamId &&
+        cached.expires > Date.now()
+      ) {
+        return res.json({
+          items: cached.items,
+          count: cached.items.length,
+          partial: cached.partial || false
+        });
+      }
 
       if (Date.now() - previous < 15000) {
         return res.status(429).json({
-          error: 'Подожди 15 секунд перед повторным обновлением'
+          error: 'Подожди 15 секунд перед повторной загрузкой'
         });
       }
 
@@ -845,14 +938,12 @@ app.get(
 
       const items = await fetchInventory(steamId);
 
-      inventoryCache.set(
-        String(req.telegramUser.id),
-        {
-          steamId,
-          items,
-          expires: Date.now() + 120000
-        }
-      );
+      inventoryCache.set(String(req.telegramUser.id), {
+        steamId,
+        items,
+        partial: items.length >= 5000,
+        expires: Date.now() + 120000
+      });
 
       res.json({
         items,
@@ -869,6 +960,8 @@ app.get(
   }
 );
 
+/* СОЗДАНИЕ ЗАЯВКИ */
+
 app.post(
   '/api/sell/requests',
   requireTelegram,
@@ -881,10 +974,9 @@ app.post(
         !Array.isArray(ids) ||
         ids.length < 1 ||
         ids.length > 30 ||
-        ids.some(
-          id =>
-            typeof id !== 'string' ||
-            !/^\d{1,25}$/.test(id)
+        ids.some(id =>
+          typeof id !== 'string' ||
+          !/^\d{1,25}$/.test(id)
         ) ||
         new Set(ids).size !== ids.length
       ) {
@@ -893,13 +985,8 @@ app.post(
         });
       }
 
-      const steamId = await steamForUser(
-        req.telegramUser.id
-      );
-
-      const cached = inventoryCache.get(
-        String(req.telegramUser.id)
-      );
+      const steamId = await steamForUser(req.telegramUser.id);
+      const cached = inventoryCache.get(String(req.telegramUser.id));
 
       if (
         !steamId ||
@@ -936,7 +1023,6 @@ app.post(
       res.status(201).json(result.rows[0]);
     } catch (err) {
       console.error('Sell request:', err.message);
-
       res.status(500).json({
         error: 'Не удалось создать заявку'
       });
@@ -944,13 +1030,18 @@ app.post(
   }
 );
 
+/* ЗАЯВКИ ПРОДАВЦА */
+
 app.get(
   '/api/sell/requests',
   requireTelegram,
   async (req, res) => {
     try {
       const result = await pool.query(`
-        SELECT id,items,status,offer_rub,created_at
+        SELECT
+          id,items,status,offer_rub,
+          created_at,trade_opened_at,
+          received_at,payout_due_at
         FROM buyout_requests
         WHERE telegram_id=$1
         ORDER BY id DESC
@@ -966,6 +1057,8 @@ app.get(
   }
 );
 
+/* АДМИН: ЗАЯВКИ */
+
 app.get(
   '/api/admin/buyouts',
   requireAdmin,
@@ -973,13 +1066,10 @@ app.get(
     try {
       const result = await pool.query(`
         SELECT
-          id,
-          telegram_id,
-          steam_id,
-          items,
-          status,
-          offer_rub,
-          created_at
+          id,telegram_id,steam_id,
+          items,status,offer_rub,created_at,
+          trade_opened_at,received_at,
+          payout_due_at,received_by
         FROM buyout_requests
         ORDER BY id DESC
         LIMIT 100
@@ -1047,9 +1137,7 @@ app.post(
   async (req, res) => {
     if (
       !/^\d+$/.test(req.params.id) ||
-      !['accept', 'decline'].includes(
-        req.body?.decision
-      )
+      !['accept','decline'].includes(req.body?.decision)
     ) {
       return res.status(400).json({
         error: 'Неверное решение'
@@ -1092,6 +1180,152 @@ app.post(
   }
 );
 
+/* ССЫЛКА НА ОБМЕН ПО ПРИНЯТОЙ ЗАЯВКЕ */
+
+function getShopTradeUrl() {
+  const raw = process.env.STEAM_TRADE_URL;
+
+  if (!raw) {
+    throw new Error('STEAM_TRADE_URL не настроен в Railway');
+  }
+
+  const url = new URL(raw);
+
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== 'steamcommunity.com' ||
+    url.pathname !== '/tradeoffer/new/' ||
+    !/^\d+$/.test(url.searchParams.get('partner') || '') ||
+    !/^[A-Za-z0-9_-]+$/.test(url.searchParams.get('token') || '')
+  ) {
+    throw new Error('Неверная ссылка обмена магазина');
+  }
+
+  return url.toString();
+}
+
+app.post(
+  '/api/sell/requests/:id/trade',
+  requireTelegram,
+  requireSellConsent,
+  async (req, res) => {
+    if (!/^\d+$/.test(req.params.id)) {
+      return res.status(400).json({
+        error: 'Неверный номер заявки'
+      });
+    }
+
+    try {
+      const result = await pool.query(`
+        SELECT id,steam_id,items,status
+        FROM buyout_requests
+        WHERE id=$1 AND telegram_id=$2
+      `, [
+        req.params.id,
+        req.telegramUser.id
+      ]);
+
+      if (!result.rowCount) {
+        return res.status(404).json({
+          error: 'Заявка не найдена'
+        });
+      }
+
+      const request = result.rows[0];
+
+      if (request.status !== 'accepted') {
+        return res.status(409).json({
+          error: 'Сначала необходимо принять цену выкупа'
+        });
+      }
+
+      const linkedSteamId = await steamForUser(req.telegramUser.id);
+
+      if (!linkedSteamId || linkedSteamId !== request.steam_id) {
+        return res.status(409).json({
+          error: 'Для обмена привяжи Steam-аккаунт, указанный в заявке'
+        });
+      }
+
+      const url = getShopTradeUrl();
+
+      await pool.query(`
+        UPDATE buyout_requests
+        SET trade_opened_at=COALESCE(trade_opened_at,NOW()),
+            updated_at=NOW()
+        WHERE id=$1 AND telegram_id=$2 AND status='accepted'
+      `, [
+        req.params.id,
+        req.telegramUser.id
+      ]);
+
+      res.json({
+        url,
+        requestId: request.id,
+        items: request.items,
+        warning: 'Открытие ссылки не подтверждает отправку или получение предметов.'
+      });
+    } catch (err) {
+      console.error('Trade link:', err.message);
+      res.status(503).json({
+        error: err.message || 'Не удалось открыть обмен'
+      });
+    }
+  }
+);
+
+/* АДМИН: ПОДТВЕРЖДЕНИЕ ПОЛУЧЕНИЯ */
+
+app.post(
+  '/api/admin/buyouts/:id/received',
+  requireAdmin,
+  async (req, res) => {
+    if (!/^\d+$/.test(req.params.id)) {
+      return res.status(400).json({
+        error: 'Неверный номер заявки'
+      });
+    }
+
+    if (req.body?.confirmed !== true) {
+      return res.status(400).json({
+        error: 'Необходимо подтвердить фактическое получение предметов'
+      });
+    }
+
+    try {
+      const result = await pool.query(`
+        UPDATE buyout_requests
+        SET
+          status='received',
+          received_at=NOW(),
+          payout_due_at=NOW() + INTERVAL '7 days',
+          received_by=$1,
+          updated_at=NOW()
+        WHERE id=$2
+          AND status='accepted'
+        RETURNING
+          id,status,received_at,payout_due_at
+      `, [
+        req.admin.id,
+        req.params.id
+      ]);
+
+      if (!result.rowCount) {
+        return res.status(409).json({
+          error: 'Подтвердить получение можно только для принятой заявки'
+        });
+      }
+
+      res.json(result.rows[0]);
+    } catch (err) {
+      console.error('Confirm received:', err.message);
+      res.status(500).json({
+        error: 'Не удалось подтвердить получение'
+      });
+    }
+  }
+);
+
 app.use(express.static(__dirname));
 
 app.get('/', (_req, res) => {
@@ -1114,9 +1348,7 @@ async function start() {
   await initDatabase();
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(
-      `REZZKIY MARKET started on port ${PORT}`
-    );
+    console.log(`REZZKIY MARKET started on port ${PORT}`);
   });
 }
 
