@@ -1,1 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REZZKIY MARKET</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#090a0d;color:white;font-family:Arial,sans-serif}
+header{padding:20px;text-align:center;font-weight:bold;border-bottom:1px solid #333}
+.orange-text{color:#ff7900}
+main{padding:16px 16px 100px;max-width:600px;margin:auto}
+h2{font-size:21px}
+.banner{background:linear-gradient(120deg,#50200a,#151515);border:1px solid #70310d;border-radius:15px;padding:25px 18px}
+.banner h1{font-size:30px;margin:0;font-style:italic}
+.banner p{color:#ccc;font-size:13px}
+.btn{background:#ff7900;color:white;border:0;border-radius:10px;padding:14px;font-weight:bold;cursor:pointer}
+.actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0}
+.actions button{background:#191b20;color:white;border:1px solid #333;border-radius:12px;padding:16px 3px;font-size:12px}
+.actions b{display:block;color:#ff7900;font-size:24px;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:#191b20;border:1px solid #333;border-radius:12px;padding:10px}
+.card img{width:100%;height:115px;object-fit:contain}
+.card h3{font-size:13px;margin:8px 0 3px}
+.card small{color:#aaa}
+.price{font-weight:bold;margin:10px 0}
+.card button{width:100%}
+input,select{width:100%;padding:13px;background:#1b1d22;color:white;border:1px solid #444;border-radius:9px;margin:7px 0 14px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#111216;border-top:1px solid #333;padding:12px 2px max(12px,env(safe-area-inset-bottom))}
+nav button{flex:1;background:none;border:0;color:#aaa;font-size:11px}
+nav button.active{color:#ff7900}
+nav b{display:block;font-size:20px;margin-bottom:5px}
+.page{display:none}
+.page.active{display:block}
+.item{background:#191b20;padding:15px;border-radius:10px;margin:10px 0}
+.total{display:flex;justify-content:space-between;margin:20px 0;font-weight:bold}
+</style>
+</head>
+<body>
 
+<header>REZZKIY <span class="orange-text">MARKET</span></header>
+
+<main>
+
+<section id="home" class="page active">
+<div class="banner">
+<h1>REZZKIY<br><span class="orange-text">MARKET</span></h1>
+<h2>CS2 SKINS</h2>
+<p>Покупай и продавай скины CS2</p>
+<button class="btn" onclick="go('catalog')">Открыть каталог</button>
+</div>
+
+<div class="actions">
+<button onclick="go('catalog')"><b>🛒</b>Купить</button>
+<button onclick="go('sell')"><b>◇</b>Продать</button>
+<button onclick="go('cart')"><b>▣</b>Корзина</button>
+<button onclick="go('profile')"><b>◉</b>Профиль</button>
+</div>
+
+<h2>Популярное</h2>
+<div id="popular" class="grid"></div>
+</section>
+
+<section id="catalog" class="page">
+<h2>Каталог</h2>
+<input id="search" placeholder="Поиск по скинам..." oninput="render()">
+<select id="filter" onchange="render()">
+<option value="">Все скины</option>
+<option>AK-47</option>
+<option>AWP</option>
+<option>M4A4</option>
+<option>USP-S</option>
+</select>
+<div id="products" class="grid"></div>
+</section>
+
+<section id="cart" class="page">
+<h2>Корзина</h2>
+<div id="cartItems"></div>
+<div class="total">
+<span>Итого:</span>
+<span id="total">0 ₽</span>
+</div>
+<button class="btn" style="width:100%" onclick="checkout()">Оформить заказ</button>
+</section>
+
+<section id="sell" class="page">
+<h2>Продать скин</h2>
+<p>Выставьте свой скин на продажу</p>
+<label>Название скина</label>
+<input id="skinName" placeholder="AK-47 | Redline">
+<label>Цена продажи (₽)</label>
+<input id="skinPrice" type="number" placeholder="1290">
+<label>Состояние</label>
+<select id="condition">
+<option>Factory New</option>
+<option>Minimal Wear</option>
+<option>Field-Tested</option>
+<option>Well-Worn</option>
+<option>Battle-Scarred</option>
+</select>
+<button class="btn" style="width:100%" onclick="sell()">Выставить на продажу</button>
+<p style="color:#aaa;font-size:12px">Демонстрационный режим. Steam пока не подключён.</p>
+</section>
+
+<section id="profile" class="page">
+<h2>Профиль</h2>
+<div class="item">
+<h3 id="username">Игрок</h3>
+<p id="userid">Telegram ID</p>
+</div>
+<div class="item">
+<p>Баланс</p>
+<h2>0 ₽</h2>
+<button class="btn" onclick="alert('Платежи пока не подключены')">Пополнить</button>
+</div>
+<div class="item">Мои заказы</div>
+<div class="item">Мои продажи</div>
+<div class="item">Привязка Steam — скоро</div>
+<div class="item">Поддержка</div>
+</section>
+
+</main>
+
+<nav>
+<button data-page="home" onclick="go('home')" class="active"><b>⌂</b>Главная</button>
+<button data-page="catalog" onclick="go('catalog')"><b>▦</b>Каталог</button>
+<button data-page="sell" onclick="go('sell')"><b>◇</b>Продать</button>
+<button data-page="cart" onclick="go('cart')"><b>▣</b>Корзина</button>
+<button data-page="profile" onclick="go('profile')"><b>♙</b>Профиль</button>
+</nav>
+
+<script>
+const tg=window.Telegram?.WebApp;
+if(tg){
+tg.ready();
+tg.expand();
+}
+
+const skins=[
+{name:"AK-47 | Redline",condition:"Field-Tested",price:1290,img:""},
+{name:"AWP | Asiimov",condition:"Battle-Scarred",price:8990,img:""},
+{name:"M4A4 | Emperor",condition:"Minimal Wear",price:4390,img:""},
+{name:"USP-S | Kill Confirmed",condition:"Field-Tested",price:3250,img:""}
+];
+
+let cart=[];
+
+function go(id){
+document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
+document.getElementById(id).classList.add("active");
+document.querySelectorAll("nav button").forEach(b=>{
+b.classList.toggle("active",b.dataset.page===id);
+});
+if(id==="cart")renderCart();
+window.scrollTo(0,0);
+}
+
+function productCard(s,i){
+const card=document.createElement("div");
+card.className="card";
+
+const image=document.createElement("div");
+image.style.cssText="height:115px;display:grid;place-items:center;background:#111;border-radius:8px;color:#ff7900;font-size:35px";
+image.textContent="▰";
+card.appendChild(image);
+
+const title=document.createElement("h3");
+title.textContent=s.name;
+card.appendChild(title);
+
+const condition=document.createElement("small");
+condition.textContent=s.condition;
+card.appendChild(condition);
+
+const price=document.createElement("div");
+price.className="price";
+price.textContent=s.price.toLocaleString("ru-RU")+" ₽";
+card.appendChild(price);
+
+const btn=document.createElement("button");
+btn.className="btn";
+btn.textContent="В корзину";
+btn.onclick=()=>addCart(i);
+card.appendChild(btn);
+
+return card;
+}
+
+function render(){
+const query=document.getElementById("search").value.toLowerCase();
+const filter=document.getElementById("filter").value;
+const products=document.getElementById("products");
+products.replaceChildren();
+
+skins.forEach((s,i)=>{
+if(s.name.toLowerCase().includes(query)&&(!filter||s.name.includes(filter))){
+products.appendChild(productCard(s,i));
+}
+});
+}
+
+function addCart(i){
+cart.push(i);
+alert("Скин добавлен в корзину");
+}
+
+function renderCart(){
+const box=document.getElementById("cartItems");
+box.replaceChildren();
+let total=0;
+
+cart.forEach((id,index)=>{
+const s=skins[id];
+total+=s.price;
+
+const row=document.createElement("div");
+row.className="item";
+
+const name=document.createElement("strong");
+name.textContent=s.name;
+row.appendChild(name);
+
+const price=document.createElement("p");
+price.textContent=s.price.toLocaleString("ru-RU")+" ₽";
+row.appendChild(price);
+
+const remove=document.createElement("button");
+remove.textContent="Удалить";
+remove.className="btn";
+remove.onclick=()=>{
+cart.splice(index,1);
+renderCart();
+};
+row.appendChild(remove);
+box.appendChild(row);
+});
+
+document.getElementById("total").textContent=total.toLocaleString("ru-RU")+" ₽";
+
+if(cart.length===0){
+box.textContent="Корзина пуста";
+}
+}
+
+function checkout(){
+if(cart.length===0){
+alert("Корзина пуста");
+return;
+}
+alert("Тестовый заказ создан. Реальная оплата пока не подключена.");
+cart=[];
+renderCart();
+}
+
+function sell(){
+const name=document.getElementById("skinName").value.trim();
+const price=Number(document.getElementById("skinPrice").value);
+const condition=document.getElementById("condition").value;
+
+if(!name||!Number.isFinite(price)||price<=0){
+alert("Введите название и корректную цену");
+return;
+}
+
+skins.push({name,price,condition,img:""});
+document.getElementById("skinName").value="";
+document.getElementById("skinPrice").value="";
+render();
+alert("Тестовое объявление добавлено");
+go("catalog");
+}
+
+if(tg?.initDataUnsafe?.user){
+const user=tg.initDataUnsafe.user;
+document.getElementById("username").textContent=user.first_name||"Игрок";
+document.getElementById("userid").textContent="Telegram ID: "+user.id;
+}
+
+const popular=document.getElementById("popular");
+skins.slice(0,4).forEach((s,i)=>popular.appendChild(productCard(s,i)));
+render();
+</script>
+</body>
+</html>
