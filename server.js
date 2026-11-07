@@ -3,159 +3,247 @@ import express from 'express';
 import pg from 'pg';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {fileURLToPath} from 'node:url';
 
-const app = express();
-const { Pool } = pg;
-const PORT = Number(process.env.PORT || 8080);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app=express();
+const {Pool}=pg;
+const PORT=Number(process.env.PORT||8080);
+const DIR=path.dirname(fileURLToPath(import.meta.url));
 
-const SITE_URL = 'https://rezzkiy-market-production-dbf4.up.railway.app';
-const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
-const OPENID_NS = 'http://specs.openid.net/auth/2.0';
-const IDENTIFIER_SELECT = OPENID_NS + '/identifier_select';
-const RULES_VERSION = '2026-11-07-v1';
+const SITE_URL='https://rezzkiy-market-production-dbf4.up.railway.app';
+const OPENID='https://steamcommunity.com/openid/login';
+const NS='http://specs.openid.net/auth/2.0';
+const RULES='2026-11-07-v1';
 
 app.disable('x-powered-by');
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({limit:'5mb'}));
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes('.railway.internal') ||
-       process.env.DATABASE_URL?.includes('localhost') ||
-       process.env.DATABASE_URL?.includes('127.0.0.1')
-    ? false
-    : { rejectUnauthorized: false }
+const pool=new Pool({
+  connectionString:process.env.DATABASE_URL,
+  ssl:/railway\.internal|localhost|127\.0\.0\.1/.test(
+    process.env.DATABASE_URL||''
+  )?false:{rejectUnauthorized:false}
 });
 
-const categories = {
-  rifles: ['AK-47','M4A4','M4A1-S','AWP','AUG','FAMAS','Galil AR','SG 553','SSG 08','SCAR-20','G3SG1'],
-  pistols: ['Glock-18','USP-S','P2000','Desert Eagle','P250','Five-SeveN','Tec-9','CZ75-Auto','Dual Berettas','R8 Revolver'],
-  smg: ['MP9','MAC-10','MP7','MP5-SD','UMP-45','P90','PP-Bizon'],
-  heavy: ['Nova','XM1014','MAG-7','Sawed-Off','M249','Negev'],
-  knives: ['Karambit','Bayonet','M9 Bayonet','Butterfly Knife','Flip Knife','Gut Knife','Huntsman Knife','Falchion Knife','Bowie Knife','Shadow Daggers','Navaja Knife','Stiletto Knife','Ursus Knife','Talon Knife','Classic Knife','Paracord Knife','Survival Knife','Nomad Knife','Skeleton Knife','Kukri Knife'],
-  gloves: ['Sport Gloves','Driver Gloves','Hand Wraps','Moto Gloves','Specialist Gloves','Hydra Gloves','Bloodhound Gloves','Broken Fang Gloves']
+const categories={
+  rifles:['AK-47','M4A4','M4A1-S','AWP','AUG','FAMAS','Galil AR','SG 553','SSG 08','SCAR-20','G3SG1'],
+  pistols:['Glock-18','USP-S','P2000','Desert Eagle','P250','Five-SeveN','Tec-9','CZ75-Auto','Dual Berettas','R8 Revolver'],
+  smg:['MP9','MAC-10','MP7','MP5-SD','UMP-45','P90','PP-Bizon'],
+  heavy:['Nova','XM1014','MAG-7','Sawed-Off','M249','Negev'],
+  knives:['Karambit','Bayonet','M9 Bayonet','Butterfly Knife','Flip Knife','Gut Knife','Huntsman Knife','Falchion Knife','Bowie Knife','Shadow Daggers','Navaja Knife','Stiletto Knife','Ursus Knife','Talon Knife','Classic Knife','Paracord Knife','Survival Knife','Nomad Knife','Skeleton Knife','Kukri Knife'],
+  gloves:['Sport Gloves','Driver Gloves','Hand Wraps','Moto Gloves','Specialist Gloves','Hydra Gloves','Bloodhound Gloves','Broken Fang Gloves']
 };
 
-const conditions = [
-  'Factory New',
-  'Minimal Wear',
-  'Field-Tested',
-  'Well-Worn',
-  'Battle-Scarred',
-  'Not Painted'
+const conditions=[
+  'Factory New','Minimal Wear','Field-Tested',
+  'Well-Worn','Battle-Scarred','Not Painted'
 ];
 
-function getCategory(weapon) {
-  for (const [category, weapons] of Object.entries(categories)) {
-    if (weapons.includes(weapon)) return category;
-  }
-  return null;
-}
+const categoryOf=w=>Object.keys(categories).find(
+  c=>categories[c].includes(w)
+);
 
-function verifyTelegram(initData) {
-  const token = process.env.BOT_TOKEN;
-  if (!token || typeof initData !== 'string' || !initData) return null;
+function auth(raw){
+  try{
+    if(!process.env.BOT_TOKEN||!raw)return null;
+    const p=new URLSearchParams(raw);
+    const hash=p.get('hash');
+    if(!/^[0-9a-f]{64}$/i.test(hash||''))return null;
+    p.delete('hash');
 
-  try {
-    const params = new URLSearchParams(initData);
-    const hash = params.get('hash');
+    const t=Number(p.get('auth_date'));
+    const now=Math.floor(Date.now()/1000);
+    if(!Number.isSafeInteger(t)||t>now+60||now-t>3600)return null;
 
-    if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) return null;
-    params.delete('hash');
-
-    const authDateRaw = params.get('auth_date');
-    const authDate = Number(authDateRaw);
-    const now = Math.floor(Date.now() / 1000);
-
-    if (
-      !authDateRaw ||
-      !Number.isSafeInteger(authDate) ||
-      authDate > now + 60 ||
-      now - authDate > 3600
-    ) return null;
-
-    const dataCheckString = [...params.entries()]
-      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-      .map(([key, value]) => `${key}=${value}`)
+    const s=[...p]
+      .sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0)
+      .map(([k,v])=>`${k}=${v}`)
       .join('\n');
 
-    const secret = crypto
-      .createHmac('sha256', 'WebAppData')
-      .update(token)
-      .digest();
+    const secret=crypto.createHmac('sha256','WebAppData')
+      .update(process.env.BOT_TOKEN).digest();
 
-    const expected = crypto
-      .createHmac('sha256', secret)
-      .update(dataCheckString)
-      .digest();
+    const expected=crypto.createHmac('sha256',secret)
+      .update(s).digest();
 
-    const received = Buffer.from(hash, 'hex');
+    const received=Buffer.from(hash,'hex');
 
-    if (
-      received.length !== expected.length ||
-      !crypto.timingSafeEqual(received, expected)
-    ) return null;
+    if(!crypto.timingSafeEqual(expected,received))return null;
 
-    const user = JSON.parse(params.get('user') || 'null');
-
-    return user && Number.isSafeInteger(user.id) ? user : null;
-  } catch {
+    const u=JSON.parse(p.get('user')||'null');
+    return Number.isSafeInteger(u?.id)?u:null;
+  }catch{
     return null;
   }
 }
 
-function requireTelegram(req, res, next) {
-  const user = verifyTelegram(req.get('X-Telegram-Init-Data'));
-
-  if (!user) {
-    return res.status(401).json({
-      error: 'Открой магазин через Telegram'
-    });
-  }
-
-  req.telegramUser = user;
+function user(req,res,next){
+  const u=auth(req.get('X-Telegram-Init-Data'));
+  if(!u)return res.status(401).json({
+    error:'Открой приложение через Telegram'
+  });
+  req.telegramUser=u;
   next();
 }
 
-function requireAdmin(req, res, next) {
-  const user = verifyTelegram(req.get('X-Telegram-Init-Data'));
+function admin(req,res,next){
+  const u=auth(req.get('X-Telegram-Init-Data'));
+  if(!u)return res.status(401).json({
+    error:'Требуется Telegram'
+  });
 
-  if (!user) {
-    return res.status(401).json({
-      error: 'Telegram-авторизация не прошла'
-    });
-  }
-
-  const adminId = Number(process.env.ADMIN_TELEGRAM_ID);
-
-  if (!Number.isSafeInteger(adminId) || user.id !== adminId) {
+  if(
+    !Number.isSafeInteger(Number(process.env.ADMIN_TELEGRAM_ID))||
+    u.id!==Number(process.env.ADMIN_TELEGRAM_ID)
+  ){
     return res.status(403).json({
-      error: 'Нет прав администратора'
+      error:'Нет прав администратора'
     });
   }
 
-  req.admin = user;
+  req.admin=u;
   next();
 }
 
-async function initDatabase() {
+const bad=(res,code,error)=>res.status(code).json({error});
+const validId=x=>/^\d+$/.test(String(x));
+
+function key(){
+  const raw=process.env.PAYMENT_DATA_KEY||'';
+  if(!/^[0-9a-fA-F]{64}$/.test(raw)){
+    throw Error(
+      'PAYMENT_DATA_KEY должен содержать 64 шестнадцатеричных символа'
+    );
+  }
+  return Buffer.from(raw,'hex');
+}
+
+function encrypt(value){
+  const iv=crypto.randomBytes(12);
+  const cipher=crypto.createCipheriv('aes-256-gcm',key(),iv);
+  const payload=Buffer.concat([
+    cipher.update(JSON.stringify(value),'utf8'),
+    cipher.final()
+  ]);
+  return Buffer.concat([
+    iv,cipher.getAuthTag(),payload
+  ]).toString('base64');
+}
+
+function decrypt(raw){
+  const buf=Buffer.from(raw,'base64');
+  const d=crypto.createDecipheriv(
+    'aes-256-gcm',key(),buf.subarray(0,12)
+  );
+  d.setAuthTag(buf.subarray(12,28));
+  return JSON.parse(
+    Buffer.concat([
+      d.update(buf.subarray(28)),
+      d.final()
+    ]).toString('utf8')
+  );
+}
+
+function paymentInput(body){
+  const method=body?.method;
+
+  if(method==='RUB'){
+    const card=String(body.card||'').replace(/[\s-]/g,'');
+    const phone=String(body.phone||'').replace(/[\s()\-]/g,'');
+    const fullName=String(body.fullName||'')
+      .trim().replace(/\s+/g,' ');
+    const bank=String(body.bank||'').trim();
+
+    if(
+      !/^\d{16,19}$/.test(card)||
+      !/^\+?\d{10,15}$/.test(phone)||
+      !/^\S+\s+\S+/.test(fullName)||
+      fullName.length>120||
+      bank.length<2||
+      bank.length>100
+    ){
+      throw Error(
+        'Проверь номер карты, телефон, имя и фамилию и банк'
+      );
+    }
+
+    return {method,card,phone,fullName,bank};
+  }
+
+  if(method==='BALANCE'){
+    return {method:'BALANCE'};
+  }
+
+  if(method==='USDT'){
+    const network=body.network;
+    const address=String(body.address||'').trim();
+
+    if(!['TRC20','ERC20','BEP20'].includes(network)){
+      throw Error('Выбери сеть USDT');
+    }
+
+    if(
+      network==='TRC20'&&
+      !/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address)
+    ){
+      throw Error('Неверный адрес TRC20');
+    }
+
+    if(
+      network!=='TRC20'&&
+      !/^0x[a-fA-F0-9]{40}$/.test(address)
+    ){
+      throw Error('Неверный адрес EVM');
+    }
+
+    return {method,network,address};
+  }
+
+  throw Error('Выбери валюту выплаты');
+}
+
+function publicPayment(row){
+  if(!row?.payment_details)return null;
+  const p=decrypt(row.payment_details);
+
+  if(p.method==='BALANCE'){
+    return {method:'BALANCE'};
+  }
+
+  if(p.method==='RUB'){
+    return {
+      method:'RUB',
+      cardMasked:'•••• '+p.card.slice(-4),
+      phoneMasked:'•••• '+p.phone.slice(-4),
+      fullName:p.fullName,
+      bank:p.bank
+    };
+  }
+
+  return {
+    method:'USDT',
+    network:p.network,
+    address:p.address
+  };
+}
+
+async function initDb(){
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS products (
+    CREATE TABLE IF NOT EXISTS products(
       id BIGSERIAL PRIMARY KEY,
       weapon TEXT NOT NULL,
       skin TEXT NOT NULL,
       category TEXT NOT NULL,
       condition TEXT NOT NULL,
-      price INTEGER NOT NULL CHECK(price > 0),
-      quantity INTEGER NOT NULL DEFAULT 1 CHECK(quantity >= 0),
+      price INTEGER NOT NULL CHECK(price>0),
+      quantity INTEGER NOT NULL DEFAULT 1 CHECK(quantity>=0),
       image_url TEXT DEFAULT '',
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS product_images (
+    CREATE TABLE IF NOT EXISTS product_images(
       id UUID PRIMARY KEY,
       mime TEXT NOT NULL,
       data BYTEA NOT NULL,
@@ -164,7 +252,7 @@ async function initDatabase() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS steam_accounts (
+    CREATE TABLE IF NOT EXISTS steam_accounts(
       telegram_id BIGINT PRIMARY KEY,
       steam_id TEXT NOT NULL UNIQUE,
       linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -172,7 +260,7 @@ async function initDatabase() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS steam_auth_states (
+    CREATE TABLE IF NOT EXISTS steam_auth_states(
       state_hash TEXT PRIMARY KEY,
       telegram_id BIGINT NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL
@@ -180,7 +268,7 @@ async function initDatabase() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS sell_consents (
+    CREATE TABLE IF NOT EXISTS sell_consents(
       telegram_id BIGINT PRIMARY KEY,
       rules_version TEXT NOT NULL,
       agreed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -188,7 +276,7 @@ async function initDatabase() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS buyout_requests (
+    CREATE TABLE IF NOT EXISTS buyout_requests(
       id BIGSERIAL PRIMARY KEY,
       telegram_id BIGINT NOT NULL,
       steam_id TEXT NOT NULL,
@@ -200,391 +288,308 @@ async function initDatabase() {
     )
   `);
 
-  await pool.query(`
-    ALTER TABLE buyout_requests
-    ADD COLUMN IF NOT EXISTS trade_opened_at TIMESTAMPTZ
-  `);
+  for(const sql of [
+    'trade_opened_at TIMESTAMPTZ',
+    'received_at TIMESTAMPTZ',
+    'payout_due_at TIMESTAMPTZ',
+    'received_by BIGINT',
+    'payment_details TEXT',
+    'payment_saved_at TIMESTAMPTZ',
+    'seller_username TEXT',
+    'seller_name TEXT',
+    'paid_at TIMESTAMPTZ',
+    'paid_by BIGINT'
+  ]){
+    await pool.query(
+      'ALTER TABLE buyout_requests ADD COLUMN IF NOT EXISTS '+sql
+    );
+  }
 
   await pool.query(`
-    ALTER TABLE buyout_requests
-    ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ
-  `);
-
-  await pool.query(`
-    ALTER TABLE buyout_requests
-    ADD COLUMN IF NOT EXISTS payout_due_at TIMESTAMPTZ
-  `);
-
-  await pool.query(`
-    ALTER TABLE buyout_requests
-    ADD COLUMN IF NOT EXISTS received_by BIGINT
+    CREATE TABLE IF NOT EXISTS balance_ledger(
+      id BIGSERIAL PRIMARY KEY,
+      telegram_id BIGINT NOT NULL,
+      request_id BIGINT NOT NULL UNIQUE
+        REFERENCES buyout_requests(id),
+      amount_rub INTEGER NOT NULL CHECK(amount_rub>0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
   `);
 
   console.log('Database ready');
 }
 
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
+app.get('/api/health',(_q,r)=>{
+  r.json({status:'ok'});
 });
 
-app.get('/api/categories', (_req, res) => {
-  res.json(categories);
+app.get('/api/categories',(_q,r)=>{
+  r.json(categories);
 });
 
-app.get('/api/products', async (_req, res) => {
-  try {
-    const result = await pool.query(
-      'SELECT * FROM products ORDER BY created_at DESC, id DESC'
+app.get('/api/products',async(_q,r)=>{
+  try{
+    r.json(
+      (await pool.query(
+        'SELECT * FROM products ORDER BY created_at DESC,id DESC'
+      )).rows
     );
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Products:', err.message);
-    res.status(500).json({
-      error: 'Не удалось загрузить товары'
-    });
+  }catch{
+    bad(r,500,'Ошибка каталога');
   }
 });
 
-app.get('/api/admin/me', requireAdmin, (req, res) => {
-  res.json({ admin: true, id: req.admin.id });
+app.get('/api/admin/me',admin,(q,r)=>{
+  r.json({admin:true,id:q.admin.id});
 });
 
-app.post('/api/images', requireAdmin, async (req, res) => {
-  try {
-    const image = req.body?.image;
-
-    if (typeof image !== 'string') {
-      return res.status(400).json({
-        error: 'Выбери фотографию'
-      });
-    }
-
-    const match = image.match(
+app.post('/api/images',admin,async(q,r)=>{
+  try{
+    const m=String(q.body?.image||'').match(
       /^data:(image\/jpeg|image\/png|image\/webp);base64,([A-Za-z0-9+/]+={0,2})$/
     );
 
-    if (!match) {
-      return res.status(400).json({
-        error: 'Нужен файл JPG, PNG или WebP'
-      });
+    if(!m)return bad(r,400,'Нужен JPG, PNG или WebP');
+
+    const data=Buffer.from(m[2],'base64');
+
+    if(!data.length||data.length>3*1024*1024){
+      return bad(r,400,'Максимум 3 МБ');
     }
 
-    const [, mime, base64] = match;
+    const jpeg=
+      data[0]===255&&data[1]===216&&data[2]===255;
 
-    if (base64.length > 4 * 1024 * 1024) {
-      return res.status(400).json({
-        error: 'Фотография слишком большая'
-      });
+    const png=data.subarray(0,8).equals(
+      Buffer.from([137,80,78,71,13,10,26,10])
+    );
+
+    const webp=
+      data.toString('ascii',0,4)==='RIFF'&&
+      data.toString('ascii',8,12)==='WEBP';
+
+    if(!(
+      (m[1]==='image/jpeg'&&jpeg)||
+      (m[1]==='image/png'&&png)||
+      (m[1]==='image/webp'&&webp)
+    )){
+      return bad(r,400,'Неверный формат файла');
     }
 
-    const data = Buffer.from(base64, 'base64');
-
-    if (!data.length || data.length > 3 * 1024 * 1024) {
-      return res.status(400).json({
-        error: 'Максимальный размер фотографии — 3 МБ'
-      });
-    }
-
-    const isJpeg =
-      data.length >= 3 &&
-      data[0] === 255 &&
-      data[1] === 216 &&
-      data[2] === 255;
-
-    const isPng =
-      data.length >= 8 &&
-      data.subarray(0, 8).equals(
-        Buffer.from([137,80,78,71,13,10,26,10])
-      );
-
-    const isWebp =
-      data.length >= 12 &&
-      data.toString('ascii', 0, 4) === 'RIFF' &&
-      data.toString('ascii', 8, 12) === 'WEBP';
-
-    if (
-      !(
-        (mime === 'image/jpeg' && isJpeg) ||
-        (mime === 'image/png' && isPng) ||
-        (mime === 'image/webp' && isWebp)
-      )
-    ) {
-      return res.status(400).json({
-        error: 'Формат фотографии не соответствует файлу'
-      });
-    }
-
-    const id = crypto.randomUUID();
+    const id=crypto.randomUUID();
 
     await pool.query(
-      'INSERT INTO product_images(id,mime,data) VALUES($1,$2,$3)',
-      [id, mime, data]
+      'INSERT INTO product_images VALUES($1,$2,$3,NOW())',
+      [id,m[1],data]
     );
 
-    res.status(201).json({
-      url: `/api/images/${id}`
-    });
-  } catch (err) {
-    console.error('Upload:', err.message);
-    res.status(500).json({
-      error: 'Ошибка загрузки фотографии'
-    });
+    r.status(201).json({url:'/api/images/'+id});
+  }catch{
+    bad(r,500,'Ошибка загрузки фото');
   }
 });
 
-app.get('/api/images/:id', async (req, res) => {
-  const id = req.params.id;
-
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-  ) {
-    return res.sendStatus(400);
+app.get('/api/images/:id',async(q,r)=>{
+  if(!/^[0-9a-f-]{36}$/i.test(q.params.id)){
+    return r.sendStatus(400);
   }
 
-  try {
-    const result = await pool.query(
+  try{
+    const x=await pool.query(
       'SELECT mime,data FROM product_images WHERE id=$1',
-      [id]
+      [q.params.id]
     );
 
-    if (!result.rowCount) return res.sendStatus(404);
+    if(!x.rowCount)return r.sendStatus(404);
 
-    res.set('Content-Type', result.rows[0].mime);
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.set('X-Content-Type-Options', 'nosniff');
-
-    res.send(result.rows[0].data);
-  } catch (err) {
-    console.error('Image:', err.message);
-    res.sendStatus(500);
+    r.set('Content-Type',x.rows[0].mime);
+    r.set('X-Content-Type-Options','nosniff');
+    r.set('Cache-Control','public,max-age=86400');
+    r.send(x.rows[0].data);
+  }catch{
+    r.sendStatus(500);
   }
 });
 
-app.post('/api/products', requireAdmin, async (req, res) => {
-  try {
-    const {
-      weapon, skin, condition, price, quantity, image_url
-    } = req.body || {};
+app.post('/api/products',admin,async(q,r)=>{
+  const {
+    weapon,skin,condition,price,quantity,image_url=''
+  }=q.body||{};
 
-    const category = getCategory(weapon);
+  if(
+    !categoryOf(weapon)||
+    typeof skin!=='string'||
+    !skin.trim()||
+    skin.length>150||
+    !conditions.includes(condition)||
+    !Number.isSafeInteger(price)||
+    price<1||
+    price>2147483647||
+    !Number.isSafeInteger(quantity)||
+    quantity<0||
+    quantity>2147483647||
+    typeof image_url!=='string'||
+    image_url.length>2000
+  ){
+    return bad(r,400,'Проверь товар');
+  }
 
-    if (
-      !category ||
-      typeof skin !== 'string' ||
-      !skin.trim() ||
-      skin.length > 150 ||
-      !conditions.includes(condition) ||
-      !Number.isSafeInteger(price) ||
-      price <= 0 ||
-      price > 2147483647 ||
-      !Number.isSafeInteger(quantity) ||
-      quantity < 0 ||
-      quantity > 2147483647 ||
-      typeof image_url !== 'string' ||
-      image_url.length > 2000
-    ) {
-      return res.status(400).json({
-        error: 'Проверь данные товара'
-      });
+  if(
+    image_url&&
+    !/^\/api\/images\/[0-9a-f-]{36}$/i.test(image_url)
+  ){
+    try{
+      if(new URL(image_url).protocol!=='https:')throw Error();
+    }catch{
+      return bad(r,400,'Неверная ссылка фото');
     }
+  }
 
-    if (image_url) {
-      const internal =
-        /^\/api\/images\/[0-9a-f-]{36}$/i.test(image_url);
-
-      if (!internal) {
-        try {
-          if (new URL(image_url).protocol !== 'https:') {
-            throw Error();
-          }
-        } catch {
-          return res.status(400).json({
-            error: 'Неверный адрес изображения'
-          });
-        }
-      }
-    }
-
-    const result = await pool.query(`
-      INSERT INTO products
-      (weapon,skin,category,condition,price,quantity,image_url)
+  try{
+    const x=await pool.query(`
+      INSERT INTO products(
+        weapon,skin,category,condition,
+        price,quantity,image_url
+      )
       VALUES($1,$2,$3,$4,$5,$6,$7)
       RETURNING *
-    `, [
-      weapon, skin.trim(), category, condition,
-      price, quantity, image_url
+    `,[
+      weapon,skin.trim(),categoryOf(weapon),
+      condition,price,quantity,image_url
     ]);
 
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Add product:', err.message);
-    res.status(500).json({
-      error: 'Не удалось добавить товар'
-    });
+    r.status(201).json(x.rows[0]);
+  }catch{
+    bad(r,500,'Ошибка добавления');
   }
 });
 
-app.delete('/api/products/:id', requireAdmin, async (req, res) => {
-  try {
-    if (!/^\d+$/.test(req.params.id)) {
-      return res.status(400).json({
-        error: 'Неверный ID'
-      });
-    }
+app.delete('/api/products/:id',admin,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный ID');
+  }
 
-    const result = await pool.query(
+  try{
+    const x=await pool.query(
       'DELETE FROM products WHERE id=$1 RETURNING id',
-      [req.params.id]
+      [q.params.id]
     );
 
-    if (!result.rowCount) {
-      return res.status(404).json({
-        error: 'Товар не найден'
-      });
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Delete:', err.message);
-    res.status(500).json({
-      error: 'Не удалось удалить товар'
-    });
+    x.rowCount
+      ?r.json({success:true})
+      :bad(r,404,'Товар не найден');
+  }catch{
+    bad(r,500,'Ошибка удаления');
   }
 });
 
-function hashState(value) {
-  return crypto
-    .createHash('sha256')
-    .update(value)
-    .digest('hex');
-}
+const stateHash=s=>crypto
+  .createHash('sha256')
+  .update(s)
+  .digest('hex');
 
-app.post('/api/steam/connect', requireTelegram, async (req, res) => {
-  try {
-    const state = crypto.randomBytes(32).toString('hex');
+app.post('/api/steam/connect',user,async(q,r)=>{
+  try{
+    const state=crypto.randomBytes(32).toString('hex');
 
     await pool.query(
-      'DELETE FROM steam_auth_states WHERE expires_at < NOW()'
+      'DELETE FROM steam_auth_states WHERE expires_at<NOW()'
     );
 
     await pool.query(`
       INSERT INTO steam_auth_states
-      (state_hash,telegram_id,expires_at)
-      VALUES($1,$2,NOW() + INTERVAL '10 minutes')
-    `, [
-      hashState(state),
-      req.telegramUser.id
-    ]);
+      VALUES($1,$2,NOW()+INTERVAL '10 minutes')
+    `,[stateHash(state),q.telegramUser.id]);
 
-    const url = new URL(STEAM_OPENID);
-    const callback =
-      `${SITE_URL}/auth/steam/callback?state=${state}`;
+    const u=new URL(OPENID);
 
-    const params = {
-      'openid.ns': OPENID_NS,
-      'openid.mode': 'checkid_setup',
-      'openid.return_to': callback,
-      'openid.realm': SITE_URL + '/',
-      'openid.identity': IDENTIFIER_SELECT,
-      'openid.claimed_id': IDENTIFIER_SELECT
+    const params={
+      'openid.ns':NS,
+      'openid.mode':'checkid_setup',
+      'openid.return_to':
+        SITE_URL+'/auth/steam/callback?state='+state,
+      'openid.realm':SITE_URL+'/',
+      'openid.identity':NS+'/identifier_select',
+      'openid.claimed_id':NS+'/identifier_select'
     };
 
-    for (const [key, value] of Object.entries(params)) {
-      url.searchParams.set(key, value);
+    for(const [k,v] of Object.entries(params)){
+      u.searchParams.set(k,v);
     }
 
-    res.json({ url: url.toString() });
-  } catch (err) {
-    console.error('Steam connect:', err.message);
-    res.status(500).json({
-      error: 'Не удалось начать привязку Steam'
-    });
+    r.json({url:u.toString()});
+  }catch{
+    bad(r,500,'Не удалось подключить Steam');
   }
 });
 
-app.get('/auth/steam/callback', async (req, res) => {
-  const fail = () => res.redirect(303, '/?steam=error');
-  const state = req.query.state;
+app.get('/auth/steam/callback',async(q,r)=>{
+  const fail=()=>r.redirect(303,'/?steam=error');
+  const state=q.query.state;
 
-  if (
-    typeof state !== 'string' ||
+  if(
+    typeof state!=='string'||
     !/^[0-9a-f]{64}$/.test(state)
-  ) {
+  ){
     return fail();
   }
 
-  try {
-    const pending = await pool.query(`
+  try{
+    const pending=await pool.query(`
       DELETE FROM steam_auth_states
       WHERE state_hash=$1 AND expires_at>NOW()
       RETURNING telegram_id
-    `, [hashState(state)]);
+    `,[stateHash(state)]);
 
-    if (!pending.rowCount) return fail();
+    if(!pending.rowCount)return fail();
 
-    const params = new URLSearchParams();
+    const p=new URLSearchParams();
 
-    for (const [key, value] of Object.entries(req.query)) {
-      if (
-        key.startsWith('openid.') &&
-        typeof value === 'string'
-      ) {
-        params.set(key, value);
+    for(const [k,v] of Object.entries(q.query)){
+      if(k.startsWith('openid.')&&typeof v==='string'){
+        p.set(k,v);
       }
     }
 
-    const claimed = params.get('openid.claimed_id') || '';
-    const match =
-      /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/.exec(claimed);
+    const claimed=p.get('openid.claimed_id')||'';
 
-    if (
-      params.get('openid.mode') !== 'id_res' ||
-      params.get('openid.ns') !== OPENID_NS ||
-      params.get('openid.op_endpoint') !== STEAM_OPENID ||
-      params.get('openid.return_to') !==
-        `${SITE_URL}/auth/steam/callback?state=${state}` ||
-      !match ||
-      params.get('openid.identity') !== claimed ||
-      !params.get('openid.response_nonce') ||
-      !params.get('openid.assoc_handle') ||
-      !params.get('openid.sig')
-    ) {
+    const m=/^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/
+      .exec(claimed);
+
+    const signed=(p.get('openid.signed')||'').split(',');
+
+    if(
+      !m||
+      p.get('openid.mode')!=='id_res'||
+      p.get('openid.ns')!==NS||
+      p.get('openid.op_endpoint')!==OPENID||
+      p.get('openid.return_to')!==
+        SITE_URL+'/auth/steam/callback?state='+state||
+      p.get('openid.identity')!==claimed||
+      !p.get('openid.sig')||
+      ![
+        'return_to','claimed_id','identity',
+        'response_nonce','assoc_handle','op_endpoint'
+      ].every(k=>signed.includes(k))
+    ){
       return fail();
     }
 
-    const signed =
-      (params.get('openid.signed') || '').split(',');
+    p.set('openid.mode','check_authentication');
 
-    const required = [
-      'return_to',
-      'claimed_id',
-      'identity',
-      'response_nonce',
-      'assoc_handle',
-      'op_endpoint'
-    ];
-
-    if (!required.every(key => signed.includes(key))) {
-      return fail();
-    }
-
-    params.set('openid.mode', 'check_authentication');
-
-    const response = await fetch(STEAM_OPENID, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    const resp=await fetch(OPENID,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/x-www-form-urlencoded'
       },
-      body: params.toString(),
-      signal: AbortSignal.timeout(10000)
+      body:p.toString(),
+      signal:AbortSignal.timeout(10000)
     });
 
-    const body = await response.text();
-
-    if (
-      !response.ok ||
-      !/^is_valid:true\s*$/m.test(body)
-    ) {
+    if(
+      !resp.ok||
+      !/^is_valid:true\s*$/m.test(await resp.text())
+    ){
       return fail();
     }
 
@@ -595,264 +600,181 @@ app.get('/auth/steam/callback', async (req, res) => {
       DO UPDATE SET
         steam_id=EXCLUDED.steam_id,
         linked_at=NOW()
-    `, [
-      pending.rows[0].telegram_id,
-      match[1]
-    ]);
+    `,[pending.rows[0].telegram_id,m[1]]);
 
-    res.redirect(303, '/?steam=success');
-  } catch (err) {
-    console.error('Steam callback:', err.message);
-    return fail();
+    r.redirect(303,'/?steam=success');
+  }catch(e){
+    console.error(e);
+    fail();
   }
 });
 
-/* АВАТАРКА STEAM */
+const avatarCache=new Map();
 
-const steamProfileCache = new Map();
+async function avatarFor(id){
+  const cached=avatarCache.get(id);
+  if(cached?.expires>Date.now())return cached.value;
 
-async function getSteamAvatar(steamId) {
-  const cached = steamProfileCache.get(steamId);
+  let value='';
 
-  if (cached && cached.expires > Date.now()) {
-    return cached.avatar;
-  }
+  try{
+    const resp=await fetch(
+      'https://steamcommunity.com/profiles/'+id+'/?xml=1',
+      {signal:AbortSignal.timeout(7000)}
+    );
 
-  let avatar = '';
-
-  try {
-    const profileUrl =
-      'https://steamcommunity.com/profiles/' +
-      encodeURIComponent(steamId) +
-      '/?xml=1';
-
-    const response = await fetch(profileUrl, {
-      headers: {
-        Accept: 'application/xml, text/xml'
-      },
-      signal: AbortSignal.timeout(8000)
-    });
-
-    if (response.ok) {
-      const xml = await response.text();
-
-      const match = xml.match(
-        /<avatarFull><!\[CDATA\[(https:\/\/[^<]+)\]\]><\/avatarFull>/
-      ) || xml.match(
-        /<avatarFull>(https:\/\/[^<]+)<\/avatarFull>/
+    if(resp.ok){
+      const xml=await resp.text();
+      const m=xml.match(
+        /<avatarFull>(?:<!\[CDATA\[)?(https:\/\/[^<\]]+)/
       );
 
-      if (match) {
-        const candidate = match[1].replace(/&amp;/g, '&');
-        const url = new URL(candidate);
+      if(m){
+        const u=new URL(m[1].replace(/&amp;/g,'&'));
 
-        if (
-          url.protocol === 'https:' &&
-          [
-            'avatars.steamstatic.com',
-            'steamcdn-a.akamaihd.net',
-            'avatars.akamai.steamstatic.com'
-          ].includes(url.hostname)
-        ) {
-          avatar = url.toString();
+        if([
+          'avatars.steamstatic.com',
+          'steamcdn-a.akamaihd.net',
+          'avatars.akamai.steamstatic.com'
+        ].includes(u.hostname)){
+          value=u.toString();
         }
       }
     }
-  } catch (err) {
-    console.error('Steam avatar:', err.message);
-  }
+  }catch{}
 
-  steamProfileCache.set(steamId, {
-    avatar,
-    expires: Date.now() + (avatar ? 3600000 : 300000)
+  avatarCache.set(id,{
+    value,
+    expires:Date.now()+300000
   });
 
-  return avatar;
+  return value;
 }
 
-app.get('/api/steam/me', requireTelegram, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT steam_id,linked_at
-      FROM steam_accounts
-      WHERE telegram_id=$1
-    `, [req.telegramUser.id]);
+async function steamFor(id){
+  return (
+    await pool.query(
+      'SELECT steam_id FROM steam_accounts WHERE telegram_id=$1',
+      [id]
+    )
+  ).rows[0]?.steam_id||null;
+}
 
-    if (!result.rowCount) {
-      return res.json({
-        connected: false,
-        steamId: null,
-        avatar: ''
-      });
-    }
+app.get('/api/steam/me',user,async(q,r)=>{
+  try{
+    const steamId=await steamFor(q.telegramUser.id);
 
-    const steamId = result.rows[0].steam_id;
-    const avatar = await getSteamAvatar(steamId);
-
-    res.json({
-      connected: true,
+    r.json({
+      connected:!!steamId,
       steamId,
-      avatar
+      avatar:steamId?await avatarFor(steamId):''
     });
-  } catch (err) {
-    console.error('Steam me:', err.message);
-    res.status(500).json({
-      error: 'Ошибка проверки Steam'
-    });
+  }catch{
+    bad(r,500,'Ошибка Steam');
   }
 });
 
-/* ИНВЕНТАРЬ */
+const inventoryCache=new Map();
+const inventoryRequests=new Map();
 
-const inventoryCache = new Map();
-const inventoryRequests = new Map();
+async function fetchInventory(id){
+  let cursor=null;
+  let items=[];
 
-async function steamForUser(id) {
-  const result = await pool.query(
-    'SELECT steam_id FROM steam_accounts WHERE telegram_id=$1',
-    [id]
-  );
-
-  return result.rows[0]?.steam_id || null;
-}
-
-async function fetchInventory(steamId) {
-  const all = [];
-  let cursor = null;
-
-  for (let page = 0; page < 5; page++) {
-    const url = new URL(
-      `https://steamcommunity.com/inventory/${steamId}/730/2`
+  for(let i=0;i<5;i++){
+    const u=new URL(
+      'https://steamcommunity.com/inventory/'+id+'/730/2'
     );
 
-    url.searchParams.set('l', 'english');
-    url.searchParams.set('count', '1000');
+    u.searchParams.set('l','english');
+    u.searchParams.set('count','1000');
 
-    if (cursor) {
-      url.searchParams.set('start_assetid', cursor);
+    if(cursor){
+      u.searchParams.set('start_assetid',cursor);
     }
 
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(12000)
+    const resp=await fetch(u,{
+      signal:AbortSignal.timeout(12000)
     });
 
-    if (response.status === 429) {
-      const error = new Error(
-        'Steam ограничил запросы. Попробуй позже.'
+    if(!resp.ok){
+      const e=Error(
+        resp.status===429
+          ?'Steam ограничил запросы'
+          :resp.status===403
+            ?'Сделай инвентарь публичным'
+            :'Ошибка Steam HTTP '+resp.status
       );
-      error.status = 429;
-      throw error;
+
+      e.status=resp.status===429?429:502;
+      throw e;
     }
 
-    if (response.status === 403) {
-      const error = new Error(
-        'Инвентарь закрыт или Steam запретил доступ. Сделай его публичным.'
-      );
-      error.status = 403;
-      throw error;
+    const data=await resp.json();
+
+    if(data.success!==1){
+      throw Error('Steam не предоставил инвентарь');
     }
 
-    if (!response.ok) {
-      const error = new Error(
-        'Steam временно не отдаёт инвентарь (HTTP ' +
-        response.status + ').'
-      );
-      error.status = 502;
-      throw error;
-    }
-
-    const data = await response.json();
-
-    if (!data || data.success !== 1) {
-      const error = new Error(
-        'Steam не предоставил инвентарь. Проверь настройки приватности.'
-      );
-      error.status = 502;
-      throw error;
-    }
-
-    const descriptions = new Map(
-      (data.descriptions || []).map(item => [
-        `${item.classid}_${item.instanceid}`,
-        item
-      ])
+    const desc=new Map(
+      (data.descriptions||[]).map(
+        d=>[d.classid+'_'+d.instanceid,d]
+      )
     );
 
-    for (const asset of data.assets || []) {
-      const description = descriptions.get(
-        `${asset.classid}_${asset.instanceid}`
-      );
+    for(const a of data.assets||[]){
+      const d=desc.get(a.classid+'_'+a.instanceid);
 
-      if (!description || description.tradable !== 1) {
-        continue;
-      }
+      if(d?.tradable!==1)continue;
 
-      const icon =
-        typeof description.icon_url === 'string' &&
-        /^[a-zA-Z0-9_/-]+$/.test(description.icon_url)
-          ? 'https://community.fastly.steamstatic.com/economy/image/' +
-            description.icon_url
-          : '';
-
-      all.push({
-        assetid: String(asset.assetid),
-        classid: String(asset.classid),
-        instanceid: String(asset.instanceid),
-        name: String(
-          description.market_hash_name ||
-          description.name ||
-          'CS2 item'
-        ).slice(0, 200),
-        icon,
-        type: String(description.type || '').slice(0, 120),
-        amount: Number(asset.amount || 1)
+      items.push({
+        assetid:String(a.assetid),
+        classid:String(a.classid),
+        instanceid:String(a.instanceid),
+        name:String(
+          d.market_hash_name||d.name||'CS2 item'
+        ).slice(0,200),
+        icon:/^[a-zA-Z0-9_/-]+$/.test(d.icon_url||'')
+          ?'https://community.fastly.steamstatic.com/economy/image/'+
+            d.icon_url
+          :'',
+        type:String(d.type||'').slice(0,120),
+        amount:Number(a.amount||1)
       });
     }
 
-    if (!data.more_items || !data.last_assetid) {
-      break;
-    }
-
-    cursor = String(data.last_assetid);
+    if(!data.more_items||!data.last_assetid)break;
+    cursor=String(data.last_assetid);
   }
 
-  return all;
+  return items;
 }
 
-/* ПРАВИЛА */
+app.get('/api/sell/rules',user,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      'SELECT rules_version FROM sell_consents WHERE telegram_id=$1',
+      [q.telegramUser.id]
+    );
 
-app.get('/api/sell/rules', requireTelegram, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT rules_version
-      FROM sell_consents
-      WHERE telegram_id=$1
-    `, [req.telegramUser.id]);
-
-    res.json({
-      version: RULES_VERSION,
-      accepted:
-        result.rows[0]?.rules_version === RULES_VERSION
+    r.json({
+      version:RULES,
+      accepted:x.rows[0]?.rules_version===RULES
     });
-  } catch {
-    res.status(500).json({
-      error: 'Ошибка проверки правил'
-    });
+  }catch{
+    bad(r,500,'Ошибка правил');
   }
 });
 
-app.post('/api/sell/agree', requireTelegram, async (req, res) => {
-  try {
-    if (
-      req.body?.version !== RULES_VERSION ||
-      req.body?.accepted !== true
-    ) {
-      return res.status(400).json({
-        error: 'Подтверди актуальные правила'
-      });
-    }
+app.post('/api/sell/agree',user,async(q,r)=>{
+  if(
+    q.body?.version!==RULES||
+    q.body?.accepted!==true
+  ){
+    return bad(r,400,'Подтверди правила');
+  }
 
+  try{
     await pool.query(`
       INSERT INTO sell_consents(telegram_id,rules_version)
       VALUES($1,$2)
@@ -860,499 +782,667 @@ app.post('/api/sell/agree', requireTelegram, async (req, res) => {
       DO UPDATE SET
         rules_version=EXCLUDED.rules_version,
         agreed_at=NOW()
-    `, [
-      req.telegramUser.id,
-      RULES_VERSION
-    ]);
+    `,[q.telegramUser.id,RULES]);
 
-    res.json({ accepted: true });
-  } catch {
-    res.status(500).json({
-      error: 'Не удалось сохранить согласие'
-    });
+    r.json({accepted:true});
+  }catch{
+    bad(r,500,'Ошибка сохранения');
   }
 });
 
-async function requireSellConsent(req, res, next) {
-  try {
-    const result = await pool.query(`
-      SELECT 1
-      FROM sell_consents
-      WHERE telegram_id=$1
-        AND rules_version=$2
-    `, [
-      req.telegramUser.id,
-      RULES_VERSION
-    ]);
+async function consent(q,r,next){
+  try{
+    const x=await pool.query(`
+      SELECT 1 FROM sell_consents
+      WHERE telegram_id=$1 AND rules_version=$2
+    `,[q.telegramUser.id,RULES]);
 
-    if (!result.rowCount) {
-      return res.status(403).json({
-        error: 'Сначала прими правила продажи'
-      });
+    if(!x.rowCount){
+      return bad(r,403,'Сначала прими правила');
     }
 
     next();
-  } catch {
-    res.status(500).json({
-      error: 'Ошибка проверки согласия'
+  }catch{
+    bad(r,500,'Ошибка согласия');
+  }
+}
+
+app.get('/api/steam/inventory',user,consent,async(q,r)=>{
+  try{
+    const id=await steamFor(q.telegramUser.id);
+
+    if(!id)return bad(r,400,'Привяжи Steam');
+
+    const cached=inventoryCache.get(
+      String(q.telegramUser.id)
+    );
+
+    if(
+      cached?.steamId===id&&
+      cached.expires>Date.now()
+    ){
+      return r.json({
+        items:cached.items,
+        count:cached.items.length
+      });
+    }
+
+    if(
+      Date.now()-(inventoryRequests.get(id)||0)<15000
+    ){
+      return bad(r,429,'Подожди 15 секунд');
+    }
+
+    inventoryRequests.set(id,Date.now());
+
+    const items=await fetchInventory(id);
+
+    inventoryCache.set(
+      String(q.telegramUser.id),
+      {
+        steamId:id,
+        items,
+        expires:Date.now()+120000
+      }
+    );
+
+    r.json({
+      items,
+      count:items.length
     });
+  }catch(e){
+    bad(r,e.status||502,e.message);
   }
-}
-
-app.get(
-  '/api/steam/inventory',
-  requireTelegram,
-  requireSellConsent,
-  async (req, res) => {
-    try {
-      const steamId = await steamForUser(req.telegramUser.id);
-
-      if (!steamId) {
-        return res.status(400).json({
-          error: 'Сначала привяжи Steam'
-        });
-      }
-
-      const previous = inventoryRequests.get(steamId) || 0;
-      const cached = inventoryCache.get(String(req.telegramUser.id));
-
-      if (
-        cached &&
-        cached.steamId === steamId &&
-        cached.expires > Date.now()
-      ) {
-        return res.json({
-          items: cached.items,
-          count: cached.items.length,
-          partial: cached.partial || false
-        });
-      }
-
-      if (Date.now() - previous < 15000) {
-        return res.status(429).json({
-          error: 'Подожди 15 секунд перед повторной загрузкой'
-        });
-      }
-
-      inventoryRequests.set(steamId, Date.now());
-
-      const items = await fetchInventory(steamId);
-
-      inventoryCache.set(String(req.telegramUser.id), {
-        steamId,
-        items,
-        partial: items.length >= 5000,
-        expires: Date.now() + 120000
-      });
-
-      res.json({
-        items,
-        count: items.length,
-        partial: items.length >= 5000
-      });
-    } catch (err) {
-      console.error('Inventory:', err.message);
-
-      res.status(err.status || 502).json({
-        error: err.message || 'Ошибка Steam'
-      });
-    }
-  }
-);
-
-/* СОЗДАНИЕ ЗАЯВКИ */
-
-app.post(
-  '/api/sell/requests',
-  requireTelegram,
-  requireSellConsent,
-  async (req, res) => {
-    try {
-      const ids = req.body?.assetids;
-
-      if (
-        !Array.isArray(ids) ||
-        ids.length < 1 ||
-        ids.length > 30 ||
-        ids.some(id =>
-          typeof id !== 'string' ||
-          !/^\d{1,25}$/.test(id)
-        ) ||
-        new Set(ids).size !== ids.length
-      ) {
-        return res.status(400).json({
-          error: 'Выбери от 1 до 30 разных предметов'
-        });
-      }
-
-      const steamId = await steamForUser(req.telegramUser.id);
-      const cached = inventoryCache.get(String(req.telegramUser.id));
-
-      if (
-        !steamId ||
-        !cached ||
-        cached.steamId !== steamId ||
-        cached.expires < Date.now()
-      ) {
-        return res.status(400).json({
-          error: 'Обнови инвентарь перед отправкой заявки'
-        });
-      }
-
-      const items = ids.map(id =>
-        cached.items.find(item => item.assetid === id)
-      );
-
-      if (items.some(item => !item)) {
-        return res.status(400).json({
-          error: 'Некоторые предметы отсутствуют в инвентаре'
-        });
-      }
-
-      const result = await pool.query(`
-        INSERT INTO buyout_requests
-        (telegram_id,steam_id,items)
-        VALUES($1,$2,$3::jsonb)
-        RETURNING id,status
-      `, [
-        req.telegramUser.id,
-        steamId,
-        JSON.stringify(items)
-      ]);
-
-      res.status(201).json(result.rows[0]);
-    } catch (err) {
-      console.error('Sell request:', err.message);
-      res.status(500).json({
-        error: 'Не удалось создать заявку'
-      });
-    }
-  }
-);
-
-/* ЗАЯВКИ ПРОДАВЦА */
-
-app.get(
-  '/api/sell/requests',
-  requireTelegram,
-  async (req, res) => {
-    try {
-      const result = await pool.query(`
-        SELECT
-          id,items,status,offer_rub,
-          created_at,trade_opened_at,
-          received_at,payout_due_at
-        FROM buyout_requests
-        WHERE telegram_id=$1
-        ORDER BY id DESC
-        LIMIT 50
-      `, [req.telegramUser.id]);
-
-      res.json(result.rows);
-    } catch {
-      res.status(500).json({
-        error: 'Не удалось загрузить заявки'
-      });
-    }
-  }
-);
-
-/* АДМИН: ЗАЯВКИ */
-
-app.get(
-  '/api/admin/buyouts',
-  requireAdmin,
-  async (_req, res) => {
-    try {
-      const result = await pool.query(`
-        SELECT
-          id,telegram_id,steam_id,
-          items,status,offer_rub,created_at,
-          trade_opened_at,received_at,
-          payout_due_at,received_by
-        FROM buyout_requests
-        ORDER BY id DESC
-        LIMIT 100
-      `);
-
-      res.json(result.rows);
-    } catch {
-      res.status(500).json({
-        error: 'Не удалось загрузить заявки'
-      });
-    }
-  }
-);
-
-app.post(
-  '/api/admin/buyouts/:id/quote',
-  requireAdmin,
-  async (req, res) => {
-    const price = req.body?.price;
-
-    if (
-      !/^\d+$/.test(req.params.id) ||
-      !Number.isSafeInteger(price) ||
-      price < 1 ||
-      price > 2147483647
-    ) {
-      return res.status(400).json({
-        error: 'Укажи корректную цену в рублях'
-      });
-    }
-
-    try {
-      const result = await pool.query(`
-        UPDATE buyout_requests
-        SET
-          offer_rub=$1,
-          status='quoted',
-          updated_at=NOW()
-        WHERE id=$2
-          AND status IN ('pending','quoted')
-        RETURNING id,status,offer_rub
-      `, [
-        price,
-        req.params.id
-      ]);
-
-      if (!result.rowCount) {
-        return res.status(409).json({
-          error: 'Заявка недоступна для оценки'
-        });
-      }
-
-      res.json(result.rows[0]);
-    } catch {
-      res.status(500).json({
-        error: 'Не удалось назначить цену'
-      });
-    }
-  }
-);
-
-app.post(
-  '/api/sell/requests/:id/decision',
-  requireTelegram,
-  async (req, res) => {
-    if (
-      !/^\d+$/.test(req.params.id) ||
-      !['accept','decline'].includes(req.body?.decision)
-    ) {
-      return res.status(400).json({
-        error: 'Неверное решение'
-      });
-    }
-
-    try {
-      const status =
-        req.body.decision === 'accept'
-          ? 'accepted'
-          : 'declined';
-
-      const result = await pool.query(`
-        UPDATE buyout_requests
-        SET
-          status=$1,
-          updated_at=NOW()
-        WHERE id=$2
-          AND telegram_id=$3
-          AND status='quoted'
-        RETURNING id,status
-      `, [
-        status,
-        req.params.id,
-        req.telegramUser.id
-      ]);
-
-      if (!result.rowCount) {
-        return res.status(409).json({
-          error: 'Предложение уже обработано'
-        });
-      }
-
-      res.json(result.rows[0]);
-    } catch {
-      res.status(500).json({
-        error: 'Не удалось сохранить решение'
-      });
-    }
-  }
-);
-
-/* ССЫЛКА НА ОБМЕН ПО ПРИНЯТОЙ ЗАЯВКЕ */
-
-function getShopTradeUrl() {
-  const raw = process.env.STEAM_TRADE_URL;
-
-  if (!raw) {
-    throw new Error('STEAM_TRADE_URL не настроен в Railway');
-  }
-
-  const url = new URL(raw);
-
-  if (
-    url.protocol !== 'https:' ||
-    url.hostname !== 'steamcommunity.com' ||
-    url.pathname !== '/tradeoffer/new/' ||
-    !/^\d+$/.test(url.searchParams.get('partner') || '') ||
-    !/^[A-Za-z0-9_-]+$/.test(url.searchParams.get('token') || '')
-  ) {
-    throw new Error('Неверная ссылка обмена магазина');
-  }
-
-  return url.toString();
-}
-
-app.post(
-  '/api/sell/requests/:id/trade',
-  requireTelegram,
-  requireSellConsent,
-  async (req, res) => {
-    if (!/^\d+$/.test(req.params.id)) {
-      return res.status(400).json({
-        error: 'Неверный номер заявки'
-      });
-    }
-
-    try {
-      const result = await pool.query(`
-        SELECT id,steam_id,items,status
-        FROM buyout_requests
-        WHERE id=$1 AND telegram_id=$2
-      `, [
-        req.params.id,
-        req.telegramUser.id
-      ]);
-
-      if (!result.rowCount) {
-        return res.status(404).json({
-          error: 'Заявка не найдена'
-        });
-      }
-
-      const request = result.rows[0];
-
-      if (request.status !== 'accepted') {
-        return res.status(409).json({
-          error: 'Сначала необходимо принять цену выкупа'
-        });
-      }
-
-      const linkedSteamId = await steamForUser(req.telegramUser.id);
-
-      if (!linkedSteamId || linkedSteamId !== request.steam_id) {
-        return res.status(409).json({
-          error: 'Для обмена привяжи Steam-аккаунт, указанный в заявке'
-        });
-      }
-
-      const url = getShopTradeUrl();
-
-      await pool.query(`
-        UPDATE buyout_requests
-        SET trade_opened_at=COALESCE(trade_opened_at,NOW()),
-            updated_at=NOW()
-        WHERE id=$1 AND telegram_id=$2 AND status='accepted'
-      `, [
-        req.params.id,
-        req.telegramUser.id
-      ]);
-
-      res.json({
-        url,
-        requestId: request.id,
-        items: request.items,
-        warning: 'Открытие ссылки не подтверждает отправку или получение предметов.'
-      });
-    } catch (err) {
-      console.error('Trade link:', err.message);
-      res.status(503).json({
-        error: err.message || 'Не удалось открыть обмен'
-      });
-    }
-  }
-);
-
-/* АДМИН: ПОДТВЕРЖДЕНИЕ ПОЛУЧЕНИЯ */
-
-app.post(
-  '/api/admin/buyouts/:id/received',
-  requireAdmin,
-  async (req, res) => {
-    if (!/^\d+$/.test(req.params.id)) {
-      return res.status(400).json({
-        error: 'Неверный номер заявки'
-      });
-    }
-
-    if (req.body?.confirmed !== true) {
-      return res.status(400).json({
-        error: 'Необходимо подтвердить фактическое получение предметов'
-      });
-    }
-
-    try {
-      const result = await pool.query(`
-        UPDATE buyout_requests
-        SET
-          status='received',
-          received_at=NOW(),
-          payout_due_at=NOW() + INTERVAL '7 days',
-          received_by=$1,
-          updated_at=NOW()
-        WHERE id=$2
-          AND status='accepted'
-        RETURNING
-          id,status,received_at,payout_due_at
-      `, [
-        req.admin.id,
-        req.params.id
-      ]);
-
-      if (!result.rowCount) {
-        return res.status(409).json({
-          error: 'Подтвердить получение можно только для принятой заявки'
-        });
-      }
-
-      res.json(result.rows[0]);
-    } catch (err) {
-      console.error('Confirm received:', err.message);
-      res.status(500).json({
-        error: 'Не удалось подтвердить получение'
-      });
-    }
-  }
-);
-
-app.use(express.static(__dirname));
-
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-async function start() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL не настроен');
+app.post('/api/sell/requests',user,consent,async(q,r)=>{
+  const ids=q.body?.assetids;
+
+  if(
+    !Array.isArray(ids)||
+    ids.length<1||
+    ids.length>30||
+    ids.some(
+      id=>typeof id!=='string'||!/^\d{1,25}$/.test(id)
+    )||
+    new Set(ids).size!==ids.length
+  ){
+    return bad(r,400,'Выбери от 1 до 30 предметов');
   }
 
-  if (!process.env.BOT_TOKEN) {
-    throw new Error('BOT_TOKEN не настроен');
+  try{
+    const id=await steamFor(q.telegramUser.id);
+    const cache=inventoryCache.get(
+      String(q.telegramUser.id)
+    );
+
+    if(
+      !id||
+      cache?.steamId!==id||
+      cache.expires<Date.now()
+    ){
+      return bad(r,400,'Обнови инвентарь');
+    }
+
+    const items=ids.map(
+      assetid=>cache.items.find(i=>i.assetid===assetid)
+    );
+
+    if(items.some(x=>!x)){
+      return bad(
+        r,400,'Предмет отсутствует в инвентаре'
+      );
+    }
+
+    const x=await pool.query(`
+      INSERT INTO buyout_requests(
+        telegram_id,steam_id,items,
+        seller_username,seller_name
+      )
+      VALUES($1,$2,$3::jsonb,$4,$5)
+      RETURNING id,status
+    `,[
+      q.telegramUser.id,
+      id,
+      JSON.stringify(items),
+      q.telegramUser.username||null,
+      [
+        q.telegramUser.first_name,
+        q.telegramUser.last_name
+      ].filter(Boolean).join(' ')||null
+    ]);
+
+    r.status(201).json(x.rows[0]);
+  }catch{
+    bad(r,500,'Ошибка заявки');
+  }
+});
+
+app.get('/api/sell/requests',user,async(q,r)=>{
+  try{
+    const x=await pool.query(`
+      SELECT
+        id,items,status,offer_rub,created_at,
+        trade_opened_at,received_at,payout_due_at,
+        paid_at,payment_details
+      FROM buyout_requests
+      WHERE telegram_id=$1
+      ORDER BY id DESC
+      LIMIT 50
+    `,[q.telegramUser.id]);
+
+    r.json(
+      x.rows.map(({payment_details,...row})=>({
+        ...row,
+        paymentSaved:!!payment_details,
+        payment:publicPayment({payment_details})
+      }))
+    );
+  }catch(e){
+    console.error(e);
+    bad(r,500,'Ошибка заявок');
+  }
+});
+
+app.get('/api/admin/buyouts',admin,async(q,r)=>{
+  try{
+    const x=await pool.query(`
+      SELECT
+        id,telegram_id,steam_id,seller_username,
+        seller_name,items,status,offer_rub,created_at,
+        trade_opened_at,received_at,payout_due_at,
+        paid_at,received_by,payment_details
+      FROM buyout_requests
+      ORDER BY id DESC
+      LIMIT 100
+    `);
+
+    r.json(
+      x.rows.map(({payment_details,...row})=>({
+        ...row,
+        paymentSaved:!!payment_details,
+        payment:publicPayment({payment_details})
+      }))
+    );
+  }catch(e){
+    console.error(e);
+    bad(r,500,'Ошибка заявок');
+  }
+});
+
+app.get('/api/admin/buyouts/:id/payment',admin,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный ID');
   }
 
-  if (!process.env.ADMIN_TELEGRAM_ID) {
-    throw new Error('ADMIN_TELEGRAM_ID не настроен');
+  try{
+    const x=await pool.query(
+      'SELECT payment_details FROM buyout_requests WHERE id=$1',
+      [q.params.id]
+    );
+
+    if(
+      !x.rowCount||
+      !x.rows[0].payment_details
+    ){
+      return bad(r,404,'Реквизиты не найдены');
+    }
+
+    r.set('Cache-Control','no-store');
+
+    r.json({
+      payment:decrypt(x.rows[0].payment_details)
+    });
+  }catch(e){
+    console.error(e);
+    bad(r,500,'Ошибка реквизитов');
+  }
+});
+
+app.post('/api/admin/buyouts/:id/quote',admin,async(q,r)=>{
+  const price=q.body?.price;
+
+  if(
+    !validId(q.params.id)||
+    !Number.isSafeInteger(price)||
+    price<1||
+    price>2147483647
+  ){
+    return bad(r,400,'Неверная цена');
   }
 
-  await initDatabase();
+  try{
+    const x=await pool.query(`
+      UPDATE buyout_requests
+      SET
+        offer_rub=$1,
+        status='quoted',
+        payment_details=NULL,
+        payment_saved_at=NULL,
+        updated_at=NOW()
+      WHERE id=$2
+        AND status IN ('pending','quoted')
+      RETURNING id,status,offer_rub
+    `,[price,q.params.id]);
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`REZZKIY MARKET started on port ${PORT}`);
+    x.rowCount
+      ?r.json(x.rows[0])
+      :bad(r,409,'Заявка недоступна');
+  }catch{
+    bad(r,500,'Ошибка цены');
+  }
+});
+
+app.post('/api/sell/requests/:id/decision',user,async(q,r)=>{
+  if(
+    !validId(q.params.id)||
+    !['accept','decline'].includes(q.body?.decision)
+  ){
+    return bad(r,400,'Неверное решение');
+  }
+
+  try{
+    const status=
+      q.body.decision==='accept'
+        ?'accepted'
+        :'declined';
+
+    const x=await pool.query(`
+      UPDATE buyout_requests
+      SET
+        status=$1,
+        seller_username=COALESCE($4,seller_username),
+        seller_name=COALESCE($5,seller_name),
+        updated_at=NOW()
+      WHERE id=$2
+        AND telegram_id=$3
+        AND status='quoted'
+      RETURNING id,status
+    `,[
+      status,
+      q.params.id,
+      q.telegramUser.id,
+      q.telegramUser.username||null,
+      [
+        q.telegramUser.first_name,
+        q.telegramUser.last_name
+      ].filter(Boolean).join(' ')||null
+    ]);
+
+    x.rowCount
+      ?r.json(x.rows[0])
+      :bad(r,409,'Заявка уже обработана');
+  }catch{
+    bad(r,500,'Ошибка решения');
+  }
+});
+
+app.post('/api/sell/requests/:id/payment',user,consent,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный ID');
+  }
+
+  let payment;
+
+  try{
+    payment=paymentInput(q.body);
+  }catch(e){
+    return bad(r,400,e.message);
+  }
+
+  try{
+    const sealed=encrypt(payment);
+
+    const x=await pool.query(`
+      UPDATE buyout_requests
+      SET
+        payment_details=$1,
+        payment_saved_at=NOW(),
+        updated_at=NOW()
+      WHERE id=$2
+        AND telegram_id=$3
+        AND status='accepted'
+        AND trade_opened_at IS NULL
+      RETURNING id
+    `,[
+      sealed,
+      q.params.id,
+      q.telegramUser.id
+    ]);
+
+    x.rowCount
+      ?r.json({
+          saved:true,
+          payment:publicPayment({
+            payment_details:sealed
+          })
+        })
+      :bad(
+          r,409,
+          'Реквизиты можно изменить только до открытия обмена'
+        );
+  }catch(e){
+    console.error(e);
+    bad(r,500,'Ошибка сохранения реквизитов');
+  }
+});
+
+function tradeUrl(){
+  const u=new URL(process.env.STEAM_TRADE_URL||'');
+
+  if(
+    u.protocol!=='https:'||
+    u.hostname!=='steamcommunity.com'||
+    u.pathname!=='/tradeoffer/new/'||
+    !/^\d+$/.test(
+      u.searchParams.get('partner')||''
+    )||
+    !/^[A-Za-z0-9_-]+$/.test(
+      u.searchParams.get('token')||''
+    )
+  ){
+    throw Error('STEAM_TRADE_URL настроен неверно');
+  }
+
+  return u.toString();
+}
+
+app.post('/api/sell/requests/:id/trade',user,consent,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный ID');
+  }
+
+  try{
+    const x=await pool.query(`
+      SELECT
+        id,steam_id,items,status,payment_details
+      FROM buyout_requests
+      WHERE id=$1 AND telegram_id=$2
+    `,[
+      q.params.id,
+      q.telegramUser.id
+    ]);
+
+    if(!x.rowCount){
+      return bad(r,404,'Заявка не найдена');
+    }
+
+    const row=x.rows[0];
+
+    if(row.status!=='accepted'){
+      return bad(r,409,'Цена не принята');
+    }
+
+    if(!row.payment_details){
+      return bad(
+        r,409,'Сначала сохрани реквизиты выплаты'
+      );
+    }
+
+    if(
+      await steamFor(q.telegramUser.id)!==row.steam_id
+    ){
+      return bad(
+        r,409,'Подключи Steam из заявки'
+      );
+    }
+
+    const url=tradeUrl();
+
+    await pool.query(`
+      UPDATE buyout_requests
+      SET
+        trade_opened_at=COALESCE(
+          trade_opened_at,NOW()
+        ),
+        updated_at=NOW()
+      WHERE id=$1
+        AND telegram_id=$2
+        AND status='accepted'
+    `,[
+      q.params.id,
+      q.telegramUser.id
+    ]);
+
+    r.json({
+      url,
+      items:row.items,
+      warning:'Ссылка не подтверждает получение предметов'
+    });
+  }catch(e){
+    console.error(e);
+    bad(r,503,e.message);
+  }
+});
+
+app.post('/api/admin/buyouts/:id/received',admin,async(q,r)=>{
+  if(
+    !validId(q.params.id)||
+    q.body?.confirmed!==true
+  ){
+    return bad(r,400,'Подтверди получение');
+  }
+
+  try{
+    const x=await pool.query(`
+      UPDATE buyout_requests
+      SET
+        status='received',
+        received_at=NOW(),
+        payout_due_at=NOW()+INTERVAL '7 days',
+        received_by=$1,
+        updated_at=NOW()
+      WHERE id=$2
+        AND status='accepted'
+        AND payment_details IS NOT NULL
+      RETURNING
+        id,status,received_at,payout_due_at
+    `,[
+      q.admin.id,
+      q.params.id
+    ]);
+
+    x.rowCount
+      ?r.json(x.rows[0])
+      :bad(
+          r,409,
+          'Заявка не готова к подтверждению'
+        );
+  }catch{
+    bad(r,500,'Ошибка подтверждения');
+  }
+});
+
+/* Статистика выплат */
+
+app.get('/api/admin/payouts',admin,async(q,r)=>{
+  try{
+    const rows=(
+      await pool.query(`
+        SELECT
+          id,telegram_id,seller_username,
+          seller_name,steam_id,items,status,
+          offer_rub,received_at,payout_due_at,
+          paid_at,payment_details
+        FROM buyout_requests
+        WHERE status IN ('received','paid')
+        ORDER BY received_at DESC
+        LIMIT 500
+      `)
+    ).rows;
+
+    const payments=rows.map(
+      ({payment_details,...row})=>({
+        ...row,
+        payment:publicPayment({payment_details})
+      })
+    );
+
+    const pending=payments.filter(
+      x=>x.status==='received'
+    );
+
+    const paid=payments.filter(
+      x=>x.status==='paid'
+    );
+
+    r.set('Cache-Control','no-store');
+
+    r.json({
+      payments,
+      stats:{
+        pendingCount:pending.length,
+        pendingRub:pending.reduce(
+          (a,x)=>a+Number(x.offer_rub||0),0
+        ),
+        paidCount:paid.length,
+        paidRub:paid.reduce(
+          (a,x)=>a+Number(x.offer_rub||0),0
+        )
+      }
+    });
+  }catch(e){
+    console.error('Payouts:',e);
+    bad(r,500,'Ошибка статистики выплат');
+  }
+});
+
+/* Баланс пользователя */
+
+app.get('/api/balance',user,async(q,r)=>{
+  try{
+    const x=await pool.query(`
+      SELECT
+        COALESCE(SUM(amount_rub),0)::bigint AS balance
+      FROM balance_ledger
+      WHERE telegram_id=$1
+    `,[q.telegramUser.id]);
+
+    r.json({
+      balanceRub:Number(x.rows[0].balance)
+    });
+  }catch{
+    bad(r,500,'Ошибка баланса');
+  }
+});
+
+/* Завершение выплаты */
+
+app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
+  if(
+    !validId(q.params.id)||
+    q.body?.confirmed!==true
+  ){
+    return bad(r,400,'Требуется подтверждение');
+  }
+
+  const client=await pool.connect();
+
+  try{
+    await client.query('BEGIN');
+
+    const x=await client.query(`
+      SELECT
+        id,telegram_id,offer_rub,status,
+        payout_due_at,payment_details
+      FROM buyout_requests
+      WHERE id=$1
+      FOR UPDATE
+    `,[q.params.id]);
+
+    if(
+      !x.rowCount||
+      x.rows[0].status!=='received'||
+      !x.rows[0].payment_details
+    ){
+      await client.query('ROLLBACK');
+      return bad(
+        r,409,'Заявка недоступна для выплаты'
+      );
+    }
+
+    const row=x.rows[0];
+
+    if(
+      new Date(row.payout_due_at).getTime()>Date.now()
+    ){
+      await client.query('ROLLBACK');
+      return bad(
+        r,409,'Семь суток ещё не истекли'
+      );
+    }
+
+    const payment=decrypt(row.payment_details);
+
+    if(payment.method==='BALANCE'){
+      await client.query(`
+        INSERT INTO balance_ledger(
+          telegram_id,request_id,amount_rub
+        )
+        VALUES($1,$2,$3)
+        ON CONFLICT(request_id) DO NOTHING
+      `,[
+        row.telegram_id,
+        row.id,
+        row.offer_rub
+      ]);
+    }
+
+    await client.query(`
+      UPDATE buyout_requests
+      SET
+        status='paid',
+        paid_at=NOW(),
+        paid_by=$1,
+        updated_at=NOW()
+      WHERE id=$2
+    `,[
+      q.admin.id,
+      row.id
+    ]);
+
+    await client.query('COMMIT');
+
+    r.json({
+      success:true,
+      method:payment.method
+    });
+  }catch(e){
+    await client.query('ROLLBACK');
+    console.error('Payout completion:',e);
+    bad(r,500,'Не удалось завершить выплату');
+  }finally{
+    client.release();
+  }
+});
+
+app.use(express.static(DIR));
+
+app.get('/',(_q,r)=>{
+  r.sendFile(path.join(DIR,'index.html'));
+});
+
+async function start(){
+  for(const v of [
+    'DATABASE_URL',
+    'BOT_TOKEN',
+    'ADMIN_TELEGRAM_ID',
+    'PAYMENT_DATA_KEY'
+  ]){
+    if(!process.env[v]){
+      throw Error('Не задана переменная '+v);
+    }
+  }
+
+  key();
+  await initDb();
+
+  app.listen(PORT,'0.0.0.0',()=>{
+    console.log('REZZKIY MARKET port '+PORT);
   });
 }
 
-start().catch(err => {
-  console.error('Startup error:', err.message);
+start().catch(e=>{
+  console.error('Startup:',e.message);
   process.exit(1);
 });
