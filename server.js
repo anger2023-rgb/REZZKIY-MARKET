@@ -7,121 +7,66 @@ import { fileURLToPath } from "node:url";
 
 const app = express();
 const { Pool } = pg;
-
 const PORT = Number(process.env.PORT || 8080);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "5mb" }));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl:
-    process.env.DATABASE_URL?.includes("localhost") ||
-    process.env.DATABASE_URL?.includes("127.0.0.1") ||
-    process.env.DATABASE_URL?.includes(".railway.internal")
-      ? false
-      : { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL?.includes(".railway.internal") ||
+       process.env.DATABASE_URL?.includes("localhost") ||
+       process.env.DATABASE_URL?.includes("127.0.0.1")
+    ? false
+    : { rejectUnauthorized: false }
 });
-
-// =====================================
-// КАТЕГОРИИ CS2
-// =====================================
 
 const categories = {
   rifles: [
-    "AK-47",
-    "M4A4",
-    "M4A1-S",
-    "AWP",
-    "AUG",
-    "FAMAS",
-    "Galil AR",
-    "SG 553",
-    "SSG 08",
-    "SCAR-20",
-    "G3SG1"
+    "AK-47","M4A4","M4A1-S","AWP","AUG",
+    "FAMAS","Galil AR","SG 553","SSG 08",
+    "SCAR-20","G3SG1"
   ],
-
   pistols: [
-    "Glock-18",
-    "USP-S",
-    "P2000",
-    "Desert Eagle",
-    "P250",
-    "Five-SeveN",
-    "Tec-9",
-    "CZ75-Auto",
-    "Dual Berettas",
-    "R8 Revolver"
+    "Glock-18","USP-S","P2000","Desert Eagle",
+    "P250","Five-SeveN","Tec-9","CZ75-Auto",
+    "Dual Berettas","R8 Revolver"
   ],
-
   smg: [
-    "MP9",
-    "MAC-10",
-    "MP7",
-    "MP5-SD",
-    "UMP-45",
-    "P90",
-    "PP-Bizon"
+    "MP9","MAC-10","MP7","MP5-SD",
+    "UMP-45","P90","PP-Bizon"
   ],
-
   heavy: [
-    "Nova",
-    "XM1014",
-    "MAG-7",
-    "Sawed-Off",
-    "M249",
-    "Negev"
+    "Nova","XM1014","MAG-7",
+    "Sawed-Off","M249","Negev"
   ],
-
   knives: [
-    "Karambit",
-    "Bayonet",
-    "M9 Bayonet",
-    "Butterfly Knife",
-    "Flip Knife",
-    "Gut Knife",
-    "Huntsman Knife",
-    "Falchion Knife",
-    "Bowie Knife",
-    "Shadow Daggers",
-    "Navaja Knife",
-    "Stiletto Knife",
-    "Ursus Knife",
-    "Talon Knife",
-    "Classic Knife",
-    "Paracord Knife",
-    "Survival Knife",
-    "Nomad Knife",
-    "Skeleton Knife",
-    "Kukri Knife"
+    "Karambit","Bayonet","M9 Bayonet",
+    "Butterfly Knife","Flip Knife","Gut Knife",
+    "Huntsman Knife","Falchion Knife","Bowie Knife",
+    "Shadow Daggers","Navaja Knife","Stiletto Knife",
+    "Ursus Knife","Talon Knife","Classic Knife",
+    "Paracord Knife","Survival Knife","Nomad Knife",
+    "Skeleton Knife","Kukri Knife"
   ],
-
   gloves: [
-    "Sport Gloves",
-    "Driver Gloves",
-    "Hand Wraps",
-    "Moto Gloves",
-    "Specialist Gloves",
-    "Hydra Gloves",
-    "Bloodhound Gloves",
-    "Broken Fang Gloves"
+    "Sport Gloves","Driver Gloves","Hand Wraps",
+    "Moto Gloves","Specialist Gloves","Hydra Gloves",
+    "Bloodhound Gloves","Broken Fang Gloves"
   ]
 };
 
+const conditions = [
+  "Factory New","Minimal Wear","Field-Tested",
+  "Well-Worn","Battle-Scarred","Not Painted"
+];
+
 function getCategory(weapon) {
   for (const [category, weapons] of Object.entries(categories)) {
-    if (weapons.includes(weapon)) {
-      return category;
-    }
+    if (weapons.includes(weapon)) return category;
   }
-
   return null;
 }
-
-// =====================================
-// TELEGRAM АВТОРИЗАЦИЯ
-// =====================================
 
 function verifyTelegram(initData) {
   const token = process.env.BOT_TOKEN;
@@ -132,15 +77,12 @@ function verifyTelegram(initData) {
 
   try {
     const params = new URLSearchParams(initData);
-
     const hash = params.get("hash");
 
-    if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) {
+    if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
       return null;
     }
 
-    // Для проверки hash удаляется только hash.
-    // Поле signature, если оно есть, остаётся.
     params.delete("hash");
 
     const authDateRaw = params.get("auth_date");
@@ -157,64 +99,42 @@ function verifyTelegram(initData) {
     }
 
     const dataCheckString = [...params.entries()]
-      .sort(([a], [b]) => {
-        if (a < b) return -1;
-        if (a > b) return 1;
-        return 0;
-      })
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
 
-    const secretKey = crypto
+    const secret = crypto
       .createHmac("sha256", "WebAppData")
       .update(token)
       .digest();
 
-    const calculatedHash = crypto
-      .createHmac("sha256", secretKey)
+    const expected = crypto
+      .createHmac("sha256", secret)
       .update(dataCheckString)
       .digest();
 
-    const receivedHash = Buffer.from(hash, "hex");
+    const received = Buffer.from(hash, "hex");
 
     if (
-      receivedHash.length !== calculatedHash.length ||
-      !crypto.timingSafeEqual(receivedHash, calculatedHash)
+      received.length !== expected.length ||
+      !crypto.timingSafeEqual(received, expected)
     ) {
       return null;
     }
 
-    const userRaw = params.get("user");
+    const user = JSON.parse(params.get("user") || "null");
 
-    if (!userRaw) {
-      return null;
-    }
+    return user && Number.isSafeInteger(user.id)
+      ? user
+      : null;
 
-    const user = JSON.parse(userRaw);
-
-    if (
-      !user ||
-      typeof user !== "object" ||
-      !Number.isSafeInteger(user.id)
-    ) {
-      return null;
-    }
-
-    return user;
-
-  } catch (error) {
-    console.error("Telegram verification failed:", error.message);
+  } catch {
     return null;
   }
 }
 
-// =====================================
-// ПРОВЕРКА АДМИНИСТРАТОРА
-// =====================================
-
 function requireAdmin(req, res, next) {
-  const initData = req.get("X-Telegram-Init-Data");
-  const user = verifyTelegram(initData);
+  const user = verifyTelegram(req.get("X-Telegram-Init-Data"));
 
   if (!user) {
     return res.status(401).json({
@@ -224,10 +144,7 @@ function requireAdmin(req, res, next) {
 
   const adminId = Number(process.env.ADMIN_TELEGRAM_ID);
 
-  if (
-    !Number.isSafeInteger(adminId) ||
-    user.id !== adminId
-  ) {
+  if (!Number.isSafeInteger(adminId) || user.id !== adminId) {
     return res.status(403).json({
       error: "Нет прав администратора"
     });
@@ -237,10 +154,6 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// =====================================
-// POSTGRESQL
-// =====================================
-
 async function initDatabase() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS products (
@@ -249,90 +162,182 @@ async function initDatabase() {
       skin TEXT NOT NULL,
       category TEXT NOT NULL,
       condition TEXT NOT NULL,
-      price INTEGER NOT NULL CHECK (price > 0),
-      quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 0),
+      price INTEGER NOT NULL CHECK(price > 0),
+      quantity INTEGER NOT NULL DEFAULT 1 CHECK(quantity >= 0),
       image_url TEXT DEFAULT '',
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
-  console.log("Database initialized");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      id UUID PRIMARY KEY,
+      mime TEXT NOT NULL,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  console.log("Database ready");
 }
 
-// =====================================
-// КАТЕГОРИИ
-// =====================================
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
 
 app.get("/api/categories", (req, res) => {
   res.json(categories);
 });
 
-// =====================================
-// КАТАЛОГ ТОВАРОВ
-// =====================================
-
 app.get("/api/products", async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT *
-      FROM products
-      ORDER BY created_at DESC, id DESC
-    `);
-
+    const result = await pool.query(
+      "SELECT * FROM products ORDER BY created_at DESC, id DESC"
+    );
     res.json(result.rows);
-
-  } catch (error) {
-    console.error("Products error:", error.message);
-
+  } catch (err) {
+    console.error("Products:", err.message);
     res.status(500).json({
-      error: "Ошибка загрузки товаров"
+      error: "Не удалось загрузить товары"
     });
   }
 });
 
-// =====================================
-// ПРОВЕРКА ПРАВ АДМИНА
-// =====================================
-
 app.get("/api/admin/me", requireAdmin, (req, res) => {
-  res.json({
-    admin: true,
-    id: req.admin.id
-  });
+  res.json({ admin: true, id: req.admin.id });
 });
 
-// =====================================
-// ДОБАВЛЕНИЕ ТОВАРА
-// =====================================
+// Загрузка фотографии из галереи
+app.post("/api/images", requireAdmin, async (req, res) => {
+  try {
+    const image = req.body?.image;
 
+    if (typeof image !== "string") {
+      return res.status(400).json({
+        error: "Выбери фотографию"
+      });
+    }
+
+    const match = image.match(
+      /^data:(image\/jpeg|image\/png|image\/webp);base64,([A-Za-z0-9+/]+={0,2})$/
+    );
+
+    if (!match) {
+      return res.status(400).json({
+        error: "Нужен файл JPG, PNG или WebP"
+      });
+    }
+
+    const mime = match[1];
+    const base64 = match[2];
+
+    if (base64.length > 4 * 1024 * 1024) {
+      return res.status(400).json({
+        error: "Фотография слишком большая"
+      });
+    }
+
+    const data = Buffer.from(base64, "base64");
+
+    if (!data.length || data.length > 3 * 1024 * 1024) {
+      return res.status(400).json({
+        error: "Максимальный размер фотографии — 3 МБ"
+      });
+    }
+
+    const isJpeg =
+      data.length >= 3 &&
+      data[0] === 0xff &&
+      data[1] === 0xd8 &&
+      data[2] === 0xff;
+
+    const isPng =
+      data.length >= 8 &&
+      data.subarray(0, 8).equals(
+        Buffer.from([137,80,78,71,13,10,26,10])
+      );
+
+    const isWebp =
+      data.length >= 12 &&
+      data.toString("ascii", 0, 4) === "RIFF" &&
+      data.toString("ascii", 8, 12) === "WEBP";
+
+    if (
+      !(
+        (mime === "image/jpeg" && isJpeg) ||
+        (mime === "image/png" && isPng) ||
+        (mime === "image/webp" && isWebp)
+      )
+    ) {
+      return res.status(400).json({
+        error: "Формат фотографии не соответствует файлу"
+      });
+    }
+
+    const id = crypto.randomUUID();
+
+    await pool.query(
+      "INSERT INTO product_images(id,mime,data) VALUES($1,$2,$3)",
+      [id, mime, data]
+    );
+
+    res.status(201).json({
+      url: `/api/images/${id}`
+    });
+
+  } catch (err) {
+    console.error("Upload:", err.message);
+    res.status(500).json({
+      error: "Ошибка загрузки фотографии"
+    });
+  }
+});
+
+// Отображение фотографии в каталоге
+app.get("/api/images/:id", async (req, res) => {
+  const id = req.params.id;
+
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return res.sendStatus(400);
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT mime,data FROM product_images WHERE id=$1",
+      [id]
+    );
+
+    if (!result.rowCount) {
+      return res.sendStatus(404);
+    }
+
+    res.set("Content-Type", result.rows[0].mime);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.set("X-Content-Type-Options", "nosniff");
+    res.send(result.rows[0].data);
+
+  } catch (err) {
+    console.error("Image:", err.message);
+    res.sendStatus(500);
+  }
+});
+
+// Добавление товара
 app.post("/api/products", requireAdmin, async (req, res) => {
   try {
     const {
-      weapon,
-      skin,
-      condition,
-      price,
-      quantity,
-      image_url
+      weapon, skin, condition,
+      price, quantity, image_url
     } = req.body || {};
 
     const category = getCategory(weapon);
-
-    const validConditions = [
-      "Factory New",
-      "Minimal Wear",
-      "Field-Tested",
-      "Well-Worn",
-      "Battle-Scarred",
-      "Not Painted"
-    ];
 
     if (
       !category ||
       typeof skin !== "string" ||
       !skin.trim() ||
       skin.length > 150 ||
-      !validConditions.includes(condition) ||
+      !conditions.includes(condition) ||
       !Number.isSafeInteger(price) ||
       price <= 0 ||
       price > 2147483647 ||
@@ -343,81 +348,59 @@ app.post("/api/products", requireAdmin, async (req, res) => {
       image_url.length > 2000
     ) {
       return res.status(400).json({
-        error: "Неверные данные товара"
+        error: "Проверь данные товара"
       });
     }
 
     if (image_url) {
-      let imageUrl;
+      const internalImage =
+        /^\/api\/images\/[0-9a-f-]{36}$/i.test(image_url);
 
-      try {
-        imageUrl = new URL(image_url);
-      } catch {
-        return res.status(400).json({
-          error: "Некорректная ссылка на изображение"
-        });
-      }
-
-      if (imageUrl.protocol !== "https:") {
-        return res.status(400).json({
-          error: "Изображение должно использовать HTTPS"
-        });
+      if (!internalImage) {
+        try {
+          const url = new URL(image_url);
+          if (url.protocol !== "https:") throw Error();
+        } catch {
+          return res.status(400).json({
+            error: "Неверный адрес изображения"
+          });
+        }
       }
     }
 
     const result = await pool.query(
-      `
-      INSERT INTO products (
-        weapon,
-        skin,
-        category,
-        condition,
-        price,
-        quantity,
-        image_url
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING *
-      `,
+      `INSERT INTO products
+      (weapon,skin,category,condition,price,quantity,image_url)
+      VALUES($1,$2,$3,$4,$5,$6,$7)
+      RETURNING *`,
       [
-        weapon,
-        skin.trim(),
-        category,
-        condition,
-        price,
-        quantity,
-        image_url
+        weapon, skin.trim(), category, condition,
+        price, quantity, image_url
       ]
     );
 
     res.status(201).json(result.rows[0]);
 
-  } catch (error) {
-    console.error("Add product error:", error.message);
-
+  } catch (err) {
+    console.error("Add product:", err.message);
     res.status(500).json({
       error: "Не удалось добавить товар"
     });
   }
 });
 
-// =====================================
-// УДАЛЕНИЕ ТОВАРА
-// =====================================
-
+// Удаление товара
 app.delete("/api/products/:id", requireAdmin, async (req, res) => {
   try {
-    const id = req.params.id;
-
-    if (!/^\d+$/.test(id)) {
+    if (!/^\d+$/.test(req.params.id)) {
       return res.status(400).json({
-        error: "Неверный ID товара"
+        error: "Неверный ID"
       });
     }
 
     const result = await pool.query(
-      "DELETE FROM products WHERE id = $1 RETURNING id",
-      [id]
+      "DELETE FROM products WHERE id=$1 RETURNING id",
+      [req.params.id]
     );
 
     if (!result.rowCount) {
@@ -426,52 +409,30 @@ app.delete("/api/products/:id", requireAdmin, async (req, res) => {
       });
     }
 
-    res.json({
-      success: true
-    });
+    res.json({ success: true });
 
-  } catch (error) {
-    console.error("Delete product error:", error.message);
-
+  } catch (err) {
+    console.error("Delete:", err.message);
     res.status(500).json({
       error: "Не удалось удалить товар"
     });
   }
 });
 
-// =====================================
-// ПРОВЕРКА РАБОТЫ СЕРВЕРА
-// =====================================
-
-app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok"
-  });
-});
-
-// =====================================
-// FRONTEND
-// =====================================
-
+// Сайт
 app.use(express.static(__dirname));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// =====================================
-// ЗАПУСК
-// =====================================
-
 async function start() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL не настроен");
   }
-
   if (!process.env.BOT_TOKEN) {
     throw new Error("BOT_TOKEN не настроен");
   }
-
   if (!process.env.ADMIN_TELEGRAM_ID) {
     throw new Error("ADMIN_TELEGRAM_ID не настроен");
   }
@@ -479,13 +440,11 @@ async function start() {
   await initDatabase();
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(
-      `REZZKIY MARKET server started on port ${PORT}`
-    );
+    console.log(`REZZKIY MARKET started on port ${PORT}`);
   });
 }
 
-start().catch(error => {
-  console.error("Server startup failed:", error.message);
+start().catch(err => {
+  console.error("Startup error:", err.message);
   process.exit(1);
 });
