@@ -8,127 +8,60 @@
 <title>REZZKIY MARKET</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root {
-  --bg:#090a0d;
-  --panel:#191b20;
-  --line:#303238;
-  --orange:#ff7900;
-  --muted:#aaa;
-}
-* {box-sizing:border-box}
-body {
-  margin:0;background:var(--bg);color:white;
-  font:14px -apple-system,BlinkMacSystemFont,Arial,sans-serif;
-}
-button,input,select {font:inherit}
-button {cursor:pointer}
-header {
-  text-align:center;padding:17px;
-  border-bottom:1px solid var(--line);
-  font-weight:800;letter-spacing:.5px;
-}
-header span,.orange {color:var(--orange)}
-main {max-width:600px;margin:auto;padding:15px 15px 110px}
-h2 {font-size:21px;margin:20px 0 14px}
-h3 {font-size:16px}
-.muted {color:var(--muted)}
-.btn {
-  background:linear-gradient(#ff901b,#ff6800);
-  border:0;color:white;padding:13px;
-  border-radius:11px;font-weight:700;
-}
-.full {width:100%}
-.secondary {
-  background:#303238;border:0;color:white;
-  border-radius:9px;padding:12px;
-}
-.banner {
-  background:linear-gradient(120deg,#4b1908,#151515 75%);
-  border:1px solid #80310e;border-radius:15px;
-  padding:26px 19px;min-height:225px;
-}
-.banner h1 {font-size:32px;font-style:italic;line-height:1;margin:0}
-.banner p {color:#ddd;line-height:1.5}
-.actions {
-  display:grid;grid-template-columns:repeat(4,1fr);
-  gap:8px;margin:20px 0;
-}
-.actions button {
-  background:var(--panel);border:1px solid var(--line);
-  border-radius:12px;color:white;padding:15px 2px;font-size:11px;
-}
-.actions b {
-  display:block;font-size:23px;color:var(--orange);margin-bottom:9px;
-}
-.grid {
-  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;
-}
-.card {
-  background:var(--panel);border:1px solid var(--line);
-  border-radius:13px;padding:10px;overflow:hidden;
-}
-.weapon {
-  height:130px;display:flex;align-items:center;
-  justify-content:center;
-  background:radial-gradient(ellipse,#34363b,#101114);
-  border-radius:9px;color:var(--orange);
-  font-size:23px;font-weight:bold;
-}
-.weapon img {width:100%;height:120px;object-fit:contain}
-.card h3 {font-size:13px;margin:10px 0 4px;overflow-wrap:anywhere}
-.card small {color:#aaa;font-size:11px}
-.price {font-size:17px;font-weight:800;margin:10px 0}
-.card .btn {width:100%;padding:11px}
-input,select {
-  width:100%;padding:13px;background:#1b1d22;
-  color:white;border:1px solid #444;
-  border-radius:9px;margin:8px 0 15px;outline:none;
-}
-input:focus {border-color:var(--orange)}
-nav {
-  position:fixed;bottom:0;left:0;right:0;z-index:20;
-  display:flex;background:#111216;border-top:1px solid #333;
-  padding:12px 2px max(12px,env(safe-area-inset-bottom));
-}
-nav button {flex:1;background:none;border:0;color:#aaa;font-size:10px}
-nav button.active {color:var(--orange)}
-nav b {display:block;font-size:21px;margin-bottom:5px}
-.page {display:none}
-.page.active {display:block}
-.item {
-  background:var(--panel);border:1px solid var(--line);
-  border-radius:11px;padding:14px;margin:10px 0;
-}
-.row {display:flex;align-items:center;justify-content:space-between;gap:10px}
-.chips {display:flex;gap:8px;overflow-x:auto;margin:12px 0;padding-bottom:5px}
-.chip {
-  white-space:nowrap;background:#202126;border:1px solid #333;
-  color:white;border-radius:25px;padding:10px 14px;
-}
-.chip.active {background:var(--orange);border-color:var(--orange)}
-.group {
-  background:var(--panel);border:1px solid var(--line);
-  color:white;border-radius:10px;padding:13px;
-}
-.group.active {border-color:var(--orange);color:var(--orange)}
-.groups {display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
-.profile-card {
-  background:linear-gradient(120deg,#292126,#17191e);
-  border:1px solid #383838;border-radius:14px;padding:20px;
-}
-.avatar {
-  width:55px;height:55px;border-radius:50%;
-  display:grid;place-items:center;
-  background:linear-gradient(135deg,#7942ff,#ff7900);
-  font-size:25px;font-weight:bold;
-}
-.total {
-  display:flex;justify-content:space-between;
-  font-weight:bold;margin:20px 0;font-size:17px;
-}
-.hidden {display:none!important}
-.notice {color:#aaa;font-size:12px;line-height:1.6}
-.admin-item {border-left:3px solid var(--orange)}
+:root{--bg:#090a0d;--panel:#191b20;--line:#303238;--orange:#ff7900;--muted:#aaa}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:white;font:14px -apple-system,BlinkMacSystemFont,Arial,sans-serif}
+button,input,select{font:inherit}
+button{cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+header{text-align:center;padding:17px;border-bottom:1px solid var(--line);font-weight:800;letter-spacing:.5px}
+header span,.orange{color:var(--orange)}
+main{max-width:600px;margin:auto;padding:15px 15px 110px}
+h2{font-size:21px;margin:20px 0 14px}
+h3{font-size:16px}
+.muted{color:var(--muted)}
+.btn{background:linear-gradient(#ff901b,#ff6800);border:0;color:white;padding:14px;border-radius:11px;font-weight:700}
+.full{width:100%}
+.banner{position:relative;overflow:hidden;background:linear-gradient(120deg,#4b1908,#151515 75%);border:1px solid #80310e;border-radius:15px;padding:26px 19px;min-height:225px}
+.banner h1{font-size:32px;font-style:italic;line-height:1;margin:0}
+.banner h2{margin:17px 0}
+.banner p{color:#ddd;font-size:13px;max-width:230px;line-height:1.5}
+.actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0}
+.actions button{background:var(--panel);border:1px solid var(--line);border-radius:12px;color:white;padding:15px 2px;font-size:11px}
+.actions b{display:block;font-size:23px;color:var(--orange);margin-bottom:9px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:10px;overflow:hidden}
+.weapon{height:130px;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse,#34363b,#101114);border-radius:9px;color:var(--orange);font-size:24px;font-weight:bold}
+.weapon img{width:100%;height:120px;object-fit:contain}
+.card h3{font-size:13px;margin:10px 0 4px;overflow-wrap:anywhere}
+.card small{color:#aaa;font-size:11px}
+.price{font-size:17px;font-weight:800;margin:10px 0}
+.card .btn{width:100%;padding:11px}
+input,select{width:100%;padding:13px;background:#1b1d22;color:white;border:1px solid #444;border-radius:9px;margin:8px 0 15px;outline:none}
+input:focus,select:focus{border-color:var(--orange)}
+nav{position:fixed;bottom:0;left:0;right:0;z-index:20;display:flex;background:#111216;border-top:1px solid #333;padding:12px 2px max(12px,env(safe-area-inset-bottom))}
+nav button{flex:1;background:none;border:0;color:#aaa;font-size:10px}
+nav button.active{color:var(--orange)}
+nav b{display:block;font-size:21px;margin-bottom:5px}
+.page{display:none}
+.page.active{display:block}
+.item{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px;margin:10px 0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.total{display:flex;justify-content:space-between;font-weight:bold;margin:20px 0;font-size:17px}
+.secondary{background:#303238;border:0;color:white;border-radius:9px;padding:12px}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:12px 0;scrollbar-width:none}
+.chip{white-space:nowrap;background:#202126;border:1px solid #333;color:white;border-radius:25px;padding:10px 14px}
+.chip.active{background:var(--orange);border-color:var(--orange)}
+.hero-weapon{height:230px;background:radial-gradient(ellipse,#4b1917,#101114 75%);display:flex;align-items:center;justify-content:center;border-radius:15px;margin-top:15px}
+.hero-weapon .weapon{width:100%;height:100%}
+.hero-weapon img{width:100%;height:220px;object-fit:contain}
+.avatar{width:55px;height:55px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#7942ff,#ff7900);font-size:25px;font-weight:bold}
+.profile-card{background:linear-gradient(120deg,#292126,#17191e);border:1px solid #383838;border-radius:14px;padding:20px}
+.group-title{margin:22px 0 10px;color:var(--orange);font-weight:bold}
+.notice{padding:12px;border:1px solid #554023;background:#241c14;border-radius:9px;color:#ffd4aa;margin:12px 0}
+.admin-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.admin-row div{min-width:0;overflow-wrap:anywhere}
+.danger{background:#852727;color:white;border:0;border-radius:8px;padding:10px}
 </style>
 </head>
 <body>
@@ -136,607 +69,543 @@ nav b {display:block;font-size:21px;margin-bottom:5px}
 <header>REZZKIY <span>MARKET</span></header>
 
 <main>
-
 <section id="home" class="page active">
-  <div class="banner">
-    <h1>REZZKIY<br><span class="orange">MARKET</span></h1>
-    <h2>CS2 SKINS</h2>
-    <p>Покупай и продавай скины CS2 в нашем маркетплейсе</p>
-    <button class="btn" onclick="go('catalog')">Открыть каталог</button>
-  </div>
-  <div class="actions">
-    <button onclick="go('catalog')"><b>🛒</b>Купить</button>
-    <button onclick="go('sell')"><b>◇</b>Продать</button>
-    <button onclick="go('cart')"><b>▣</b>Корзина</button>
-    <button onclick="go('profile')"><b>◉</b>Профиль</button>
-  </div>
-  <div class="row">
-    <h2>Популярное</h2>
-    <button class="secondary" onclick="go('catalog')">Смотреть все ›</button>
-  </div>
-  <div id="popular" class="grid"></div>
+<div class="banner">
+<h1>REZZKIY<br><span class="orange">MARKET</span></h1>
+<h2>CS2 SKINS</h2>
+<p>Покупай и продавай скины CS2 в нашем маркетплейсе</p>
+<button class="btn" onclick="go('catalog')">Открыть каталог</button>
+</div>
+<div class="actions">
+<button onclick="go('catalog')"><b>🛒</b>Купить</button>
+<button onclick="go('sell')"><b>◇</b>Продать</button>
+<button onclick="go('cart')"><b>▣</b>Корзина</button>
+<button onclick="go('profile')"><b>◉</b>Профиль</button>
+</div>
+<div class="row">
+<h2>Популярное</h2>
+<button class="secondary" onclick="go('catalog')">Смотреть все ›</button>
+</div>
+<div id="popular" class="grid"></div>
 </section>
 
 <section id="catalog" class="page">
-  <h2>Каталог скинов</h2>
-  <input id="search" placeholder="Поиск по скинам..." oninput="render()">
-  <div class="groups" id="groups"></div>
-  <h3 id="categoryTitle">Все оружие</h3>
-  <div class="chips" id="chips"></div>
-  <div id="products" class="grid"></div>
+<h2>Каталог скинов</h2>
+<input id="search" placeholder="Поиск по скинам..." oninput="render()">
+<div id="chips" class="chips"></div>
+<div id="products" class="grid"></div>
 </section>
 
 <section id="details" class="page">
-  <button class="secondary" onclick="go('catalog')">← Назад</button>
-  <div class="weapon" id="detailImage" style="height:230px;margin-top:15px"></div>
-  <h2 id="detailName"></h2>
-  <p class="muted" id="detailCondition"></p>
-  <h2 id="detailPrice"></h2>
-  <button class="btn full" id="detailBuy">В корзину</button>
-  <p class="notice">Передача предметов Steam пока не подключена.</p>
+<button class="secondary" onclick="go('catalog')">← Назад</button>
+<div class="hero-weapon" id="detailImage"></div>
+<h2 id="detailName"></h2>
+<p class="muted" id="detailCondition"></p>
+<h2 id="detailPrice"></h2>
+<button class="btn full" id="detailBuy">В корзину</button>
+<button class="secondary full" style="margin-top:10px" onclick="go('cart')">Перейти в корзину</button>
+<h3>Информация о скине</h3>
+<div class="item">
+<p>Игра: Counter-Strike 2</p>
+<p id="detailWear"></p>
+<p class="muted">Реальная передача предметов Steam пока не подключена.</p>
+</div>
 </section>
 
 <section id="cart" class="page">
-  <h2>Корзина</h2>
-  <div id="cartItems"></div>
-  <div class="total">
-    <span>Итого:</span>
-    <span id="total">0 ₽</span>
-  </div>
-  <button class="btn full" onclick="checkout()">Оформить заказ</button>
-  <p class="notice">Реальная оплата пока не подключена.</p>
+<h2>Корзина</h2>
+<div id="cartItems"></div>
+<div class="total"><span>Итого:</span><span id="total">0 ₽</span></div>
+<button class="btn full" onclick="checkout()">Оформить заказ</button>
+<p class="muted">Оплата работает только в демонстрационном режиме.</p>
 </section>
 
 <section id="sell" class="page">
-  <h2>Продать скин</h2>
-  <p class="notice">Публикация пользователями пока работает в демонстрационном режиме. Проверку Steam-инвентаря подключим отдельно.</p>
-  <label>Название</label>
-  <input id="skinName" placeholder="AK-47 | Redline">
-  <label>Цена в рублях</label>
-  <input id="skinPrice" type="number" min="1" placeholder="1290">
-  <label>Состояние</label>
-  <select id="condition">
-    <option>Factory New</option>
-    <option>Minimal Wear</option>
-    <option>Field-Tested</option>
-    <option>Well-Worn</option>
-    <option>Battle-Scarred</option>
-  </select>
-  <button class="btn full" onclick="sell()">Создать тестовое объявление</button>
+<h2>Продать скин</h2>
+<p class="muted">Пока можно создать только тестовое объявление. Для реальных продаж потребуется проверка инвентаря Steam.</p>
+<label>Название скина</label>
+<input id="skinName" placeholder="AK-47 | Redline">
+<label>Цена продажи (₽)</label>
+<input id="skinPrice" type="number" min="1" placeholder="1290">
+<label>Состояние</label>
+<select id="condition">
+<option>Factory New</option>
+<option>Minimal Wear</option>
+<option>Field-Tested</option>
+<option>Well-Worn</option>
+<option>Battle-Scarred</option>
+</select>
+<button class="btn full" onclick="sell()">Создать тестовое объявление</button>
 </section>
 
 <section id="profile" class="page">
-  <h2>Профиль</h2>
-  <div class="profile-card">
-    <div class="row">
-      <div class="avatar" id="avatar">R</div>
-      <div style="flex:1">
-        <strong id="username">REZZKIY</strong>
-        <p class="muted" id="userid">Демо-профиль</p>
-      </div>
-    </div>
-    <hr style="border:0;border-top:1px solid #444;margin:20px 0">
-    <p class="muted">Баланс</p>
-    <h2>0 ₽</h2>
-    <button class="secondary" onclick="alert('Пополнение пока не подключено')">Пополнить</button>
-    <button class="secondary" onclick="alert('Вывод пока не подключён')">Вывести</button>
-  </div>
-  <h2>Мой аккаунт</h2>
-  <div class="item" onclick="alert('История заказов пока не подключена')">Мои заказы →</div>
-  <div class="item" onclick="alert('История продаж пока не подключена')">Мои продажи →</div>
-  <div class="item" onclick="alert('Steam пока не подключён')">Привязка Steam →</div>
-  <div class="item" onclick="alert('Поддержка пока не подключена')">Поддержка →</div>
-  <button id="adminButton" class="btn full hidden" onclick="go('admin')">Админ-панель</button>
+<h2>Профиль</h2>
+<div class="profile-card">
+<div class="row">
+<div class="avatar" id="avatar">R</div>
+<div style="flex:1">
+<strong id="username">REZZKIY</strong>
+<p class="muted" id="userid">Демо-профиль</p>
+</div>
+</div>
+<hr style="border:0;border-top:1px solid #444;margin:20px 0">
+<p class="muted">Баланс</p>
+<h2>0 ₽</h2>
+<button class="secondary" onclick="alert('Пополнение пока не подключено')">Пополнить</button>
+<button class="secondary" onclick="alert('Вывод пока не подключён')">Вывести</button>
+</div>
+
+<div id="adminEntry" style="display:none;margin:20px 0">
+<button class="btn full" onclick="openAdmin()">⚙ Админ-панель</button>
+</div>
+
+<h2>Мой аккаунт</h2>
+<div class="item" onclick="showOrders()">Мои заказы →</div>
+<div class="item" onclick="showSales()">Мои продажи →</div>
+<div class="item" onclick="alert('Steam пока не подключён')">Привязка Steam →</div>
+<div class="item" onclick="alert('Поддержка пока не подключена')">Поддержка →</div>
 </section>
 
 <section id="admin" class="page">
-  <button class="secondary" onclick="go('profile')">← Профиль</button>
-  <h2>Админ-панель</h2>
-  <p class="notice">Только для администратора REZZKIY MARKET.</p>
+<button class="secondary" onclick="go('profile')">← Назад</button>
+<h2>⚙ Админ-панель</h2>
+<div class="notice">Только подтверждённый администратор может добавлять и удалять товары.</div>
 
-  <h3>Добавить товар</h3>
-  <label>Оружие / нож / перчатки</label>
-  <select id="adminWeapon"></select>
-  <label>Название скина</label>
-  <input id="adminSkin" placeholder="Redline">
-  <label>Состояние</label>
-  <select id="adminCondition">
-    <option>Factory New</option>
-    <option>Minimal Wear</option>
-    <option>Field-Tested</option>
-    <option>Well-Worn</option>
-    <option>Battle-Scarred</option>
-    <option>Not Painted</option>
-  </select>
-  <label>Цена (₽)</label>
-  <input id="adminPrice" type="number" min="1" step="1">
-  <label>Количество</label>
-  <input id="adminQuantity" type="number" min="0" step="1" value="1">
-  <label>Ссылка на изображение (HTTPS)</label>
-  <input id="adminImage" placeholder="https://...">
-  <button class="btn full" onclick="addProduct()">Добавить в каталог</button>
+<h3>Добавить скин</h3>
+<label>Оружие / нож / перчатки</label>
+<select id="adminWeapon"></select>
+<label>Название скина</label>
+<input id="adminSkin" maxlength="150" placeholder="Redline">
+<label>Состояние</label>
+<select id="adminCondition">
+<option>Factory New</option>
+<option>Minimal Wear</option>
+<option>Field-Tested</option>
+<option>Well-Worn</option>
+<option>Battle-Scarred</option>
+<option>Not Painted</option>
+</select>
+<label>Цена (₽)</label>
+<input id="adminPrice" type="number" min="1" step="1" placeholder="1290">
+<label>Количество</label>
+<input id="adminQuantity" type="number" min="0" step="1" value="1">
+<label>Ссылка на изображение (HTTPS)</label>
+<input id="adminImage" placeholder="https://...">
+<button id="adminAddButton" class="btn full" onclick="adminAddProduct()">Добавить товар</button>
 
-  <h2>Управление товарами</h2>
-  <div id="adminProducts"></div>
+<h2>Управление товарами</h2>
+<div id="adminProducts"></div>
 </section>
-
 </main>
 
 <nav>
-  <button data-page="home" class="active" onclick="go('home')"><b>⌂</b>Главная</button>
-  <button data-page="catalog" onclick="go('catalog')"><b>▦</b>Каталог</button>
-  <button data-page="sell" onclick="go('sell')"><b>◇</b>Продать</button>
-  <button data-page="cart" onclick="go('cart')"><b>▣</b>Корзина</button>
-  <button data-page="profile" onclick="go('profile')"><b>♙</b>Профиль</button>
+<button data-page="home" class="active" onclick="go('home')"><b>⌂</b>Главная</button>
+<button data-page="catalog" onclick="go('catalog')"><b>▦</b>Каталог</button>
+<button data-page="sell" onclick="go('sell')"><b>◇</b>Продать</button>
+<button data-page="cart" onclick="go('cart')"><b>▣</b>Корзина</button>
+<button data-page="profile" onclick="go('profile')"><b>♙</b>Профиль</button>
 </nav>
 
 <script>
 const tg=window.Telegram?.WebApp;
 if(tg){tg.ready();tg.expand()}
 
-const fallbackCategories={
-  rifles:["AK-47","M4A4","M4A1-S","AWP","AUG","FAMAS","Galil AR","SG 553","SSG 08","SCAR-20","G3SG1"],
-  pistols:["Glock-18","USP-S","P2000","Desert Eagle","P250","Five-SeveN","Tec-9","CZ75-Auto","Dual Berettas","R8 Revolver"],
-  smg:["MP9","MAC-10","MP7","MP5-SD","UMP-45","P90","PP-Bizon"],
-  heavy:["Nova","XM1014","MAG-7","Sawed-Off","M249","Negev"],
-  knives:["Karambit","Bayonet","M9 Bayonet","Butterfly Knife","Flip Knife","Gut Knife","Huntsman Knife","Falchion Knife","Bowie Knife","Shadow Daggers","Navaja Knife","Stiletto Knife","Ursus Knife","Talon Knife","Classic Knife","Paracord Knife","Survival Knife","Nomad Knife","Skeleton Knife","Kukri Knife"],
-  gloves:["Sport Gloves","Driver Gloves","Hand Wraps","Moto Gloves","Specialist Gloves","Hydra Gloves","Bloodhound Gloves","Broken Fang Gloves"]
-};
-
-const groupNames={
-  rifles:"Винтовки",
-  pistols:"Пистолеты",
-  smg:"ПП",
-  heavy:"Тяжёлое",
-  knives:"Ножи",
-  gloves:"Перчатки"
-};
-
-let categories=fallbackCategories;
-let products=[];
-let demoProducts=[];
+const initData=tg?.initData||"";
+let categories={};
+let listings=[];
+let demoListings=[];
 let cart=[];
-let selectedGroup="";
-let selectedWeapon="";
+let orders=[];
+let sales=[];
+let selectedType="";
 let isAdmin=false;
 
+const categoryNames={
+rifles:"Винтовки",
+pistols:"Пистолеты",
+smg:"Пистолеты-пулемёты",
+heavy:"Тяжёлое оружие",
+knives:"Ножи",
+gloves:"Перчатки"
+};
+
 function money(n){
-  return Number(n).toLocaleString("ru-RU")+" ₽";
+return Number(n).toLocaleString("ru-RU")+" ₽";
 }
 
-function getWeapon(s){
-  return s.weapon||s.name?.split(" | ")[0]||"";
+async function api(url,options={}){
+const headers={
+...(options.body?{"Content-Type":"application/json"}:{}),
+...(initData?{"X-Telegram-Init-Data":initData}:{})
+};
+const response=await fetch(url,{
+...options,
+headers:{...headers,...options.headers}
+});
+const data=await response.json().catch(()=>({}));
+if(!response.ok){
+throw new Error(data.error||"Ошибка сервера: "+response.status);
 }
-
-function getName(s){
-  return s.name||s.weapon+" | "+s.skin;
-}
-
-function getImage(s){
-  return s.image_url||s.image||"";
-}
-
-function getListings(){
-  return [...products,...demoProducts];
+return data;
 }
 
 function go(id){
-  if(id==="admin"&&!isAdmin)return;
-
-  document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
-  document.getElementById(id).classList.add("active");
-
-  document.querySelectorAll("nav button").forEach(b=>{
-    b.classList.toggle("active",b.dataset.page===id);
-  });
-
-  if(id==="catalog")render();
-  if(id==="cart")renderCart();
-  if(id==="admin")renderAdmin();
-
-  window.scrollTo(0,0);
+if(id==="admin"&&!isAdmin)return;
+document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));
+document.getElementById(id).classList.add("active");
+document.querySelectorAll("nav button").forEach(b=>{
+b.classList.toggle("active",b.dataset.page===id);
+});
+if(id==="cart")renderCart();
+if(id==="catalog")render();
+if(id==="home")renderPopular();
+window.scrollTo(0,0);
 }
 
 function weaponImage(s){
-  const box=document.createElement("div");
-  box.className="weapon";
-  box.textContent="CS2";
-
-  const url=getImage(s);
-  if(url){
-    const img=document.createElement("img");
-    img.src=url;
-    img.alt=getName(s);
-    img.onerror=()=>img.remove();
-    box.replaceChildren(img);
-  }
-  return box;
+const box=document.createElement("div");
+box.className="weapon";
+if(s.image){
+const img=document.createElement("img");
+img.src=s.image;
+img.alt=s.name;
+img.onerror=()=>{img.remove();box.textContent="CS2"};
+box.appendChild(img);
+}else{
+box.textContent="CS2";
+}
+return box;
 }
 
 function productCard(s){
-  const card=document.createElement("div");
-  card.className="card";
+const card=document.createElement("div");
+card.className="card";
+const image=weaponImage(s);
+image.onclick=()=>details(s.id);
+card.appendChild(image);
 
-  const image=weaponImage(s);
-  image.onclick=()=>details(s.id);
-  card.appendChild(image);
+const title=document.createElement("h3");
+title.textContent=s.name;
+card.appendChild(title);
 
-  const title=document.createElement("h3");
-  title.textContent=getName(s);
-  card.appendChild(title);
+const condition=document.createElement("small");
+condition.textContent=s.condition;
+card.appendChild(condition);
 
-  const condition=document.createElement("small");
-  condition.textContent=s.condition;
-  card.appendChild(condition);
+const price=document.createElement("div");
+price.className="price";
+price.textContent=money(s.price);
+card.appendChild(price);
 
-  const price=document.createElement("div");
-  price.className="price";
-  price.textContent=money(s.price);
-  card.appendChild(price);
-
-  const btn=document.createElement("button");
-  btn.className="btn";
-  btn.textContent="В корзину";
-  btn.disabled=s.quantity===0;
-  if(btn.disabled)btn.textContent="Нет в наличии";
-  btn.onclick=()=>addCart(s.id);
-  card.appendChild(btn);
-
-  return card;
-}
-
-function renderGroups(){
-  const box=document.getElementById("groups");
-  box.replaceChildren();
-
-  const all=document.createElement("button");
-  all.className="group"+(!selectedGroup?" active":"");
-  all.textContent="Все";
-  all.onclick=()=>selectGroup("");
-  box.appendChild(all);
-
-  for(const key of Object.keys(categories)){
-    const btn=document.createElement("button");
-    btn.className="group"+(selectedGroup===key?" active":"");
-    btn.textContent=groupNames[key]||key;
-    btn.onclick=()=>selectGroup(key);
-    box.appendChild(btn);
-  }
-}
-
-function selectGroup(group){
-  selectedGroup=group;
-  selectedWeapon="";
-  renderGroups();
-  renderChips();
-  render();
-}
-
-function renderChips(){
-  const box=document.getElementById("chips");
-  box.replaceChildren();
-
-  const weapons=selectedGroup
-    ?categories[selectedGroup]||[]
-    :Object.values(categories).flat();
-
-  const all=document.createElement("button");
-  all.className="chip"+(!selectedWeapon?" active":"");
-  all.textContent="Все";
-  all.onclick=()=>selectWeapon("");
-  box.appendChild(all);
-
-  weapons.forEach(weapon=>{
-    const btn=document.createElement("button");
-    btn.className="chip"+(selectedWeapon===weapon?" active":"");
-    btn.textContent=weapon;
-    btn.onclick=()=>selectWeapon(weapon);
-    box.appendChild(btn);
-  });
-
-  document.getElementById("categoryTitle").textContent=
-    selectedGroup?(groupNames[selectedGroup]||selectedGroup):"Все оружие";
-}
-
-function selectWeapon(weapon){
-  selectedWeapon=weapon;
-  renderChips();
-  render();
-}
-
-function render(){
-  const q=document.getElementById("search").value.toLowerCase().trim();
-  const box=document.getElementById("products");
-  box.replaceChildren();
-
-  const filtered=getListings().filter(s=>{
-    const weapon=getWeapon(s);
-    const name=getName(s);
-    return (!selectedGroup||s.category===selectedGroup||
-      (categories[selectedGroup]||[]).includes(weapon)) &&
-      (!selectedWeapon||weapon===selectedWeapon) &&
-      name.toLowerCase().includes(q);
-  });
-
-  filtered.forEach(s=>box.appendChild(productCard(s)));
-  if(!filtered.length)box.textContent="В этой категории пока нет товаров";
+const btn=document.createElement("button");
+btn.className="btn";
+btn.textContent="В корзину";
+btn.disabled=s.quantity===0;
+if(btn.disabled)btn.textContent="Нет в наличии";
+btn.onclick=()=>addCart(s.id);
+card.appendChild(btn);
+return card;
 }
 
 function renderPopular(){
-  const box=document.getElementById("popular");
-  box.replaceChildren();
-  getListings().slice(0,4).forEach(s=>box.appendChild(productCard(s)));
-  if(!box.children.length)box.textContent="Товары скоро появятся";
+const box=document.getElementById("popular");
+box.replaceChildren();
+listings.filter(s=>s.quantity>0).slice(0,4).forEach(s=>{
+box.appendChild(productCard(s));
+});
+if(!box.children.length)box.textContent="Товары скоро появятся";
+}
+
+function createChip(text,type,active=false){
+const btn=document.createElement("button");
+btn.className="chip"+(active?" active":"");
+btn.textContent=text;
+btn.onclick=()=>filterType(type);
+return btn;
+}
+
+function renderChips(){
+const box=document.getElementById("chips");
+box.replaceChildren();
+box.appendChild(createChip("Все","",selectedType===""));
+for(const [key,weapons] of Object.entries(categories)){
+box.appendChild(createChip(categoryNames[key]||key,key,selectedType===key));
+for(const weapon of weapons){
+box.appendChild(createChip(weapon,weapon,selectedType===weapon));
+}
+}
+}
+
+function filterType(type){
+selectedType=type;
+renderChips();
+render();
+}
+
+function render(){
+const q=document.getElementById("search").value.toLowerCase().trim();
+const box=document.getElementById("products");
+box.replaceChildren();
+listings.filter(s=>{
+const matchesSearch=s.name.toLowerCase().includes(q);
+const matchesType=!selectedType||
+s.weapon===selectedType||
+s.category===selectedType;
+return matchesSearch&&matchesType;
+}).forEach(s=>box.appendChild(productCard(s)));
+if(!box.children.length)box.textContent="Скины не найдены";
 }
 
 function details(id){
-  const s=getListings().find(x=>String(x.id)===String(id));
-  if(!s)return;
-
-  document.getElementById("detailName").textContent=getName(s);
-  document.getElementById("detailCondition").textContent=s.condition;
-  document.getElementById("detailPrice").textContent=money(s.price);
-
-  const box=document.getElementById("detailImage");
-  box.replaceChildren();
-  const img=weaponImage(s);
-  img.style.width="100%";
-  img.style.height="100%";
-  box.appendChild(img);
-
-  document.getElementById("detailBuy").onclick=()=>addCart(s.id);
-  go("details");
+const s=listings.find(x=>String(x.id)===String(id));
+if(!s)return;
+document.getElementById("detailName").textContent=s.name;
+document.getElementById("detailCondition").textContent=s.condition;
+document.getElementById("detailPrice").textContent=money(s.price);
+document.getElementById("detailWear").textContent="Состояние: "+s.condition;
+const image=document.getElementById("detailImage");
+image.replaceChildren();
+image.appendChild(weaponImage(s));
+const buy=document.getElementById("detailBuy");
+buy.disabled=s.quantity===0;
+buy.textContent=s.quantity===0?"Нет в наличии":"В корзину";
+buy.onclick=()=>addCart(s.id);
+go("details");
 }
 
 function addCart(id){
-  const s=getListings().find(x=>String(x.id)===String(id));
-  if(!s||s.quantity===0)return;
-
-  cart.push(String(id));
-  tg?.HapticFeedback?.notificationOccurred("success");
-  alert("Скин добавлен в корзину");
+const s=listings.find(x=>String(x.id)===String(id));
+if(!s||s.quantity===0)return;
+cart.push(String(id));
+tg?.HapticFeedback?.notificationOccurred("success");
+alert("Скин добавлен в корзину");
 }
 
 function renderCart(){
-  const box=document.getElementById("cartItems");
-  box.replaceChildren();
-  let total=0;
-
-  cart.forEach((id,index)=>{
-    const s=getListings().find(x=>String(x.id)===id);
-    if(!s)return;
-    total+=Number(s.price);
-
-    const row=document.createElement("div");
-    row.className="item";
-
-    const name=document.createElement("strong");
-    name.textContent=getName(s);
-    row.appendChild(name);
-
-    const price=document.createElement("p");
-    price.textContent=money(s.price);
-    row.appendChild(price);
-
-    const remove=document.createElement("button");
-    remove.className="secondary";
-    remove.textContent="Удалить";
-    remove.onclick=()=>{
-      cart.splice(index,1);
-      renderCart();
-    };
-    row.appendChild(remove);
-    box.appendChild(row);
-  });
-
-  document.getElementById("total").textContent=money(total);
-  if(!cart.length)box.textContent="Корзина пуста";
+const box=document.getElementById("cartItems");
+box.replaceChildren();
+let total=0;
+cart.forEach((id,index)=>{
+const s=listings.find(x=>String(x.id)===id);
+if(!s)return;
+total+=s.price;
+const row=document.createElement("div");
+row.className="item";
+const title=document.createElement("strong");
+title.textContent=s.name;
+row.appendChild(title);
+const price=document.createElement("p");
+price.textContent=money(s.price);
+row.appendChild(price);
+const remove=document.createElement("button");
+remove.className="secondary";
+remove.textContent="Удалить";
+remove.onclick=()=>{cart.splice(index,1);renderCart()};
+row.appendChild(remove);
+box.appendChild(row);
+});
+document.getElementById("total").textContent=money(total);
+if(!box.children.length)box.textContent="Корзина пуста";
 }
 
 function checkout(){
-  if(!cart.length)return alert("Корзина пуста");
-  alert("Это демонстрационная корзина. Реальные заказы и платежи пока отключены.");
+if(!cart.length){alert("Корзина пуста");return}
+orders.push({items:[...cart],date:new Date().toLocaleString("ru-RU")});
+cart=[];
+renderCart();
+alert("Тестовый заказ создан. Деньги не списаны, предметы Steam не переданы.");
 }
 
 function sell(){
-  const name=document.getElementById("skinName").value.trim();
-  const price=Number(document.getElementById("skinPrice").value);
-  const condition=document.getElementById("condition").value;
-  const weapon=name.split(" | ")[0];
-
-  if(!name.includes(" | ")||!Number.isSafeInteger(price)||price<=0){
-    return alert("Введите название в формате AK-47 | Redline и целую цену");
-  }
-
-  const category=Object.keys(categories).find(k=>categories[k].includes(weapon));
-  if(!category)return alert("Такого оружия нет в каталоге");
-
-  demoProducts.push({
-    id:"demo-"+Date.now(),
-    name,weapon,category,condition,price,quantity:1,image:""
-  });
-
-  document.getElementById("skinName").value="";
-  document.getElementById("skinPrice").value="";
-  renderPopular();
-  go("catalog");
-  alert("Тестовое объявление добавлено только на этом устройстве");
+const name=document.getElementById("skinName").value.trim();
+const price=Number(document.getElementById("skinPrice").value);
+const condition=document.getElementById("condition").value;
+if(!name||!Number.isSafeInteger(price)||price<=0){
+alert("Введите название и целую положительную цену");
+return;
+}
+const weapon=Object.values(categories).flat().find(w=>name.startsWith(w+" |"))||"";
+const category=Object.keys(categories).find(k=>categories[k].includes(weapon))||"";
+const listing={
+id:"demo-"+Date.now(),
+name,weapon,category,price,condition,quantity:1,image:"",demo:true
+};
+demoListings.push(listing);
+sales.push(listing);
+listings.unshift(listing);
+document.getElementById("skinName").value="";
+document.getElementById("skinPrice").value="";
+renderPopular();
+render();
+alert("Тестовое объявление добавлено только на этом устройстве");
+go("catalog");
 }
 
-function authHeaders(){
-  return {
-    "Content-Type":"application/json",
-    "X-Telegram-Init-Data":tg?.initData||""
-  };
+function showOrders(){
+alert(orders.length?"Тестовых заказов: "+orders.length:"Заказов пока нет");
+}
+function showSales(){
+alert(sales.length?"Тестовых объявлений: "+sales.length:"Продаж пока нет");
 }
 
-async function loadCategories(){
-  try{
-    const response=await fetch("/api/categories");
-    if(!response.ok)throw Error("Categories error");
-    categories=await response.json();
-  }catch(e){
-    console.warn("Категории загружены из резервного списка",e);
-  }
-  renderGroups();
-  renderChips();
-  fillAdminWeapons();
+function fillWeapons(){
+const select=document.getElementById("adminWeapon");
+select.replaceChildren();
+for(const [key,weapons] of Object.entries(categories)){
+const group=document.createElement("optgroup");
+group.label=categoryNames[key]||key;
+for(const weapon of weapons){
+const option=document.createElement("option");
+option.value=weapon;
+option.textContent=weapon;
+group.appendChild(option);
 }
-
-async function loadProducts(){
-  try{
-    const response=await fetch("/api/products",{cache:"no-store"});
-    if(!response.ok)throw Error("Products error");
-    products=await response.json();
-    render();
-    renderPopular();
-    if(isAdmin)renderAdmin();
-  }catch(e){
-    console.error(e);
-    document.getElementById("products").textContent=
-      "Ошибка загрузки каталога. Попробуйте позже.";
-  }
+select.appendChild(group);
+}
 }
 
 async function checkAdmin(){
-  if(!tg?.initData)return;
-  try{
-    const response=await fetch("/api/admin/me",{
-      headers:authHeaders()
-    });
-    if(response.ok){
-      isAdmin=true;
-      document.getElementById("adminButton").classList.remove("hidden");
-    }
-  }catch(e){
-    console.error("Ошибка проверки администратора",e);
-  }
+if(!initData)return;
+try{
+await api("/api/admin/me");
+isAdmin=true;
+document.getElementById("adminEntry").style.display="block";
+}catch{
+isAdmin=false;
+document.getElementById("adminEntry").style.display="none";
+}
 }
 
-function fillAdminWeapons(){
-  const select=document.getElementById("adminWeapon");
-  select.replaceChildren();
-
-  for(const [group,weapons] of Object.entries(categories)){
-    const optgroup=document.createElement("optgroup");
-    optgroup.label=groupNames[group]||group;
-
-    weapons.forEach(weapon=>{
-      const option=document.createElement("option");
-      option.value=weapon;
-      option.textContent=weapon;
-      optgroup.appendChild(option);
-    });
-    select.appendChild(optgroup);
-  }
+async function openAdmin(){
+if(!isAdmin)return;
+try{
+await api("/api/admin/me");
+go("admin");
+renderAdminProducts();
+}catch(e){
+isAdmin=false;
+document.getElementById("adminEntry").style.display="none";
+alert("Доступ запрещён: "+e.message);
+go("profile");
+}
 }
 
-async function addProduct(){
-  if(!isAdmin)return;
+async function adminAddProduct(){
+if(!isAdmin)return;
+const weapon=document.getElementById("adminWeapon").value;
+const skin=document.getElementById("adminSkin").value.trim();
+const condition=document.getElementById("adminCondition").value;
+const price=Number(document.getElementById("adminPrice").value);
+const quantity=Number(document.getElementById("adminQuantity").value);
+const image_url=document.getElementById("adminImage").value.trim();
 
-  const weapon=document.getElementById("adminWeapon").value;
-  const skin=document.getElementById("adminSkin").value.trim();
-  const condition=document.getElementById("adminCondition").value;
-  const price=Number(document.getElementById("adminPrice").value);
-  const quantity=Number(document.getElementById("adminQuantity").value);
-  const image_url=document.getElementById("adminImage").value.trim();
-
-  if(!skin||!Number.isSafeInteger(price)||price<=0||
-     !Number.isSafeInteger(quantity)||quantity<0){
-    return alert("Проверь название, цену и количество");
-  }
-
-  if(image_url){
-    try{
-      if(new URL(image_url).protocol!=="https:")
-        return alert("Ссылка должна начинаться с https://");
-    }catch{
-      return alert("Некорректная ссылка на изображение");
-    }
-  }
-
-  try{
-    const response=await fetch("/api/products",{
-      method:"POST",
-      headers:authHeaders(),
-      body:JSON.stringify({weapon,skin,condition,price,quantity,image_url})
-    });
-
-    const data=await response.json();
-    if(!response.ok)throw Error(data.error||"Ошибка добавления");
-
-    document.getElementById("adminSkin").value="";
-    document.getElementById("adminPrice").value="";
-    document.getElementById("adminImage").value="";
-    alert("Товар добавлен в каталог!");
-    await loadProducts();
-  }catch(e){
-    alert(e.message);
-  }
+if(!weapon||!skin||!Number.isSafeInteger(price)||price<=0||
+!Number.isSafeInteger(quantity)||quantity<0){
+alert("Проверь название, цену и количество");
+return;
+}
+if(image_url){
+try{
+if(new URL(image_url).protocol!=="https:")throw Error();
+}catch{
+alert("Нужна корректная HTTPS-ссылка на изображение");
+return;
+}
+}
+const button=document.getElementById("adminAddButton");
+button.disabled=true;
+try{
+await api("/api/products",{
+method:"POST",
+body:JSON.stringify({weapon,skin,condition,price,quantity,image_url})
+});
+document.getElementById("adminSkin").value="";
+document.getElementById("adminPrice").value="";
+document.getElementById("adminQuantity").value="1";
+document.getElementById("adminImage").value="";
+await loadProducts();
+renderAdminProducts();
+alert("Товар добавлен в каталог!");
+}catch(e){
+alert("Ошибка добавления: "+e.message);
+}finally{
+button.disabled=false;
+}
 }
 
-function renderAdmin(){
-  const box=document.getElementById("adminProducts");
-  box.replaceChildren();
-
-  if(!products.length){
-    box.textContent="Товаров пока нет";
-    return;
-  }
-
-  products.forEach(s=>{
-    const row=document.createElement("div");
-    row.className="item admin-item";
-
-    const name=document.createElement("strong");
-    name.textContent=getName(s);
-    row.appendChild(name);
-
-    const info=document.createElement("p");
-    info.className="muted";
-    info.textContent=money(s.price)+" · Остаток: "+s.quantity;
-    row.appendChild(info);
-
-    const remove=document.createElement("button");
-    remove.className="secondary";
-    remove.textContent="Удалить";
-    remove.onclick=()=>deleteProduct(s.id);
-    row.appendChild(remove);
-
-    box.appendChild(row);
-  });
+function renderAdminProducts(){
+const box=document.getElementById("adminProducts");
+box.replaceChildren();
+const products=listings.filter(s=>!s.demo);
+if(!products.length){
+box.textContent="Товаров пока нет";
+return;
+}
+for(const s of products){
+const row=document.createElement("div");
+row.className="item admin-row";
+const info=document.createElement("div");
+const title=document.createElement("strong");
+title.textContent=s.name;
+const subtitle=document.createElement("p");
+subtitle.className="muted";
+subtitle.textContent=money(s.price)+" · Количество: "+s.quantity;
+info.append(title,subtitle);
+const button=document.createElement("button");
+button.className="danger";
+button.textContent="Удалить";
+button.onclick=()=>adminDeleteProduct(s.id);
+row.append(info,button);
+box.appendChild(row);
+}
 }
 
-async function deleteProduct(id){
-  if(!isAdmin||!confirm("Удалить этот товар?"))return;
-
-  try{
-    const response=await fetch("/api/products/"+encodeURIComponent(id),{
-      method:"DELETE",
-      headers:authHeaders()
-    });
-    const data=await response.json();
-    if(!response.ok)throw Error(data.error||"Ошибка удаления");
-    await loadProducts();
-  }catch(e){
-    alert(e.message);
-  }
+async function adminDeleteProduct(id){
+if(!isAdmin||!confirm("Удалить этот товар?"))return;
+try{
+await api("/api/products/"+encodeURIComponent(id),{method:"DELETE"});
+await loadProducts();
+renderAdminProducts();
+alert("Товар удалён");
+}catch(e){
+alert("Ошибка удаления: "+e.message);
+}
 }
 
-const user=tg?.initDataUnsafe?.user;
-if(user){
-  document.getElementById("username").textContent=
-    user.username?"@"+user.username:user.first_name||"Игрок";
-  document.getElementById("userid").textContent="Telegram ID: "+user.id;
-  document.getElementById("avatar").textContent=
-    (user.first_name||"R").charAt(0).toUpperCase();
+async function loadProducts(){
+const products=await api("/api/products");
+listings=products.map(s=>({
+...s,
+name:s.weapon+" | "+s.skin,
+price:Number(s.price),
+quantity:Number(s.quantity),
+image:s.image_url||""
+})).concat(demoListings);
+renderPopular();
+render();
 }
 
 async function init(){
-  await loadCategories();
-  await checkAdmin();
-  await loadProducts();
+const user=tg?.initDataUnsafe?.user;
+if(user){
+document.getElementById("username").textContent=
+user.username?"@"+user.username:user.first_name||"Игрок";
+document.getElementById("userid").textContent="Telegram ID: "+user.id;
+document.getElementById("avatar").textContent=
+(user.first_name||"R").charAt(0).toUpperCase();
 }
+try{
+categories=await api("/api/categories");
+fillWeapons();
+renderChips();
+await loadProducts();
+}catch(e){
+console.error(e);
+document.getElementById("products").textContent="Ошибка загрузки каталога: "+e.message;
+}
+await checkAdmin();
+}
+
 init();
 </script>
 </body>
