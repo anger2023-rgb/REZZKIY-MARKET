@@ -343,6 +343,42 @@ async function initDb(){
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usdt_settings(
+      id INTEGER PRIMARY KEY DEFAULT 1 CHECK(id=1),
+      rate_kopecks INTEGER NOT NULL DEFAULT 8500
+        CHECK(rate_kopecks>0),
+      trc20_address TEXT NOT NULL DEFAULT '',
+      bep20_address TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    INSERT INTO usdt_settings(id)
+    VALUES(1)
+    ON CONFLICT(id) DO NOTHING
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usdt_orders(
+      id BIGSERIAL PRIMARY KEY,
+      telegram_id BIGINT NOT NULL,
+      items JSONB NOT NULL,
+      total_rub INTEGER NOT NULL CHECK(total_rub>0),
+      rate_kopecks INTEGER NOT NULL CHECK(rate_kopecks>0),
+      amount_cents BIGINT NOT NULL CHECK(amount_cents>0),
+      network TEXT NOT NULL
+        CHECK(network IN ('TRC20','BEP20')),
+      wallet_address TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'awaiting',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reported_at TIMESTAMPTZ,
+      reviewed_at TIMESTAMPTZ,
+      reviewed_by BIGINT
+    )
+  `);
+
   console.log('Database ready');
 }
 
@@ -1402,10 +1438,6 @@ app.post('/api/admin/buyouts/:id/received',admin,async(q,r)=>{
   }
 });
 
-/*
-  Выплаты появляются в отдельной очереди
-  только после подтверждения получения скинов.
-*/
 app.get('/api/admin/payouts',admin,async(q,r)=>{
   try{
     const rows=(
@@ -1493,13 +1525,6 @@ app.get('/api/balance',user,async(q,r)=>{
   }
 });
 
-/*
-  Завершение выплаты:
-  - только администратором;
-  - только после семи суток;
-  - баланс зачисляется в рамках транзакции;
-  - внешняя выплата отмечается вручную.
-*/
 app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
   if(
     !validId(q.params.id)||
@@ -1631,6 +1656,307 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
     }
   }
 });
+
+/*
+  REZZKIY MARKET — USDT PAYMENTS
+  Курс задаётся администратором.
+  Сумма и реквизиты фиксируются при создании счёта.
+*/
+
+function validUsdtAddress(network,address){
+  if(network==='TRC20'){
+    return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address);
+  }
+
+  if(network==='BEP20'){
+    return /^0x[a-fA-F0-9]{40}$/.test(address);
+  }
+
+  return false;
+}
+
+app.get('/api/admin/payment-settings',admin,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      `SELECT rate_kopecks,trc20_address,bep20_address,updated_at
+       FROM usdt_settings WHERE id=1`
+    );
+
+    r.set('Cache-Control','no-store');
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('USDT settings:',e);
+    bad(r,500,'Ошибка настроек USDT');
+  }
+});
+
+app.put('/api/admin/payment-settings',admin,async(q,r)=>{
+  const rate=q.body?.rate_kopecks;
+  const trc=String(q.body?.trc20_address||'').trim();
+  const bep=String(q.body?.bep20_address||'').trim();
+
+  if(
+    !Number.isSafeInteger(rate)||
+    rate<100||
+    rate>10000000
+  ){
+    return bad(r,400,'Укажи корректный курс USDT');
+  }
+
+  if(trc&&!validUsdtAddress('TRC20',trc)){
+    return bad(r,400,'Неверный адрес TRC20');
+  }
+
+  if(bep&&!validUsdtAddress('BEP20',bep)){
+    return bad(r,400,'Неверный адрес BEP20');
+  }
+
+  try{
+    const x=await pool.query(
+      `UPDATE usdt_settings
+       SET rate_kopecks=$1,
+           trc20_address=$2,
+           bep20_address=$3,
+           updated_at=NOW()
+       WHERE id=1
+       RETURNING rate_kopecks,trc20_address,
+                 bep20_address,updated_at`,
+      [rate,trc,bep]
+    );
+
+    r.set('Cache-Control','no-store');
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('Save USDT settings:',e);
+    bad(r,500,'Ошибка сохранения настроек');
+  }
+});
+
+/*
+  Создание счёта:
+  - цены берутся только из базы данных;
+  - проверяется наличие товаров;
+  - курс и адрес сохраняются в счёте;
+  - сумма округляется вверх до 0.01 USDT.
+*/
+app.post('/api/orders/usdt',user,async(q,r)=>{
+  const ids=q.body?.productIds;
+  const network=q.body?.network;
+
+  if(
+    !['TRC20','BEP20'].includes(network)||
+    !Array.isArray(ids)||
+    ids.length<1||
+    ids.length>50||
+    ids.some(id=>!validId(id))||
+    new Set(ids.map(String)).size!==ids.length
+  ){
+    return bad(r,400,'Проверь товары и сеть оплаты');
+  }
+
+  let client;
+
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+
+    const settings=await client.query(
+      `SELECT rate_kopecks,trc20_address,bep20_address
+       FROM usdt_settings WHERE id=1`
+    );
+
+    const config=settings.rows[0];
+
+    if(!config){
+      await client.query('ROLLBACK');
+      return bad(r,503,'Настройки USDT недоступны');
+    }
+
+    const address=network==='TRC20'
+      ?config.trc20_address
+      :config.bep20_address;
+
+    if(!validUsdtAddress(network,address)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Кошелёк этой сети ещё не настроен');
+    }
+
+    const products=await client.query(
+      `SELECT id,weapon,skin,condition,price,quantity
+       FROM products
+       WHERE id=ANY($1::bigint[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if(products.rowCount!==ids.length){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Некоторые товары уже недоступны');
+    }
+
+    if(products.rows.some(p=>p.quantity<1)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Один из товаров закончился');
+    }
+
+    const items=ids.map(id=>{
+      const p=products.rows.find(
+        x=>String(x.id)===String(id)
+      );
+
+      return {
+        product_id:p.id,
+        weapon:p.weapon,
+        skin:p.skin,
+        condition:p.condition,
+        price:p.price,
+        quantity:1
+      };
+    });
+
+    const total=items.reduce(
+      (sum,item)=>sum+Number(item.price),0
+    );
+
+    const rate=Number(config.rate_kopecks);
+
+    if(
+      !Number.isSafeInteger(total)||
+      total<1||
+      total>2147483647||
+      !Number.isSafeInteger(rate)||
+      rate<1
+    ){
+      await client.query('ROLLBACK');
+      return bad(r,400,'Неверная сумма заказа');
+    }
+
+    const amountCents=Math.ceil(
+      total*10000/rate
+    );
+
+    const order=await client.query(
+      `INSERT INTO usdt_orders(
+        telegram_id,items,total_rub,rate_kopecks,
+        amount_cents,network,wallet_address
+      )
+      VALUES($1,$2::jsonb,$3,$4,$5,$6,$7)
+      RETURNING
+        id,total_rub,rate_kopecks,amount_cents,
+        network,wallet_address,status,created_at`,
+      [
+        q.telegramUser.id,
+        JSON.stringify(items),
+        total,
+        rate,
+        amountCents,
+        network,
+        address
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    r.status(201).json(order.rows[0]);
+  }catch(e){
+    if(client){
+      try{
+        await client.query('ROLLBACK');
+      }catch{}
+    }
+
+    console.error('Create USDT order:',e);
+    bad(r,500,'Не удалось создать счёт');
+  }finally{
+    if(client)client.release();
+  }
+});
+
+app.post('/api/orders/:id/reported',user,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный номер счёта');
+  }
+
+  try{
+    const x=await pool.query(
+      `UPDATE usdt_orders
+       SET status='review',
+           reported_at=NOW()
+       WHERE id=$1
+         AND telegram_id=$2
+         AND status='awaiting'
+       RETURNING id,status,reported_at`,
+      [q.params.id,q.telegramUser.id]
+    );
+
+    if(!x.rowCount){
+      return bad(r,409,'Счёт уже отправлен на проверку');
+    }
+
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('Report USDT payment:',e);
+    bad(r,500,'Ошибка отправки на проверку');
+  }
+});
+
+app.get('/api/admin/orders',admin,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      `SELECT *
+       FROM usdt_orders
+       ORDER BY
+         CASE WHEN status='review' THEN 0 ELSE 1 END,
+         created_at DESC
+       LIMIT 200`
+    );
+
+    r.set('Cache-Control','no-store');
+    r.json(x.rows);
+  }catch(e){
+    console.error('Admin USDT orders:',e);
+    bad(r,500,'Ошибка списка платежей');
+  }
+});
+
+app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
+  const status=q.body?.status;
+
+  if(
+    !validId(q.params.id)||
+    !['paid','rejected'].includes(status)||
+    q.body?.confirmed!==true
+  ){
+    return bad(r,400,'Подтверди решение');
+  }
+
+  try{
+    const x=await pool.query(
+      `UPDATE usdt_orders
+       SET status=$1,
+           reviewed_at=NOW(),
+           reviewed_by=$2
+       WHERE id=$3
+         AND status='review'
+       RETURNING id,status,reviewed_at`,
+      [status,q.admin.id,q.params.id]
+    );
+
+    if(!x.rowCount){
+      return bad(r,409,'Платёж уже обработан');
+    }
+
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('Review USDT payment:',e);
+    bad(r,500,'Ошибка подтверждения платежа');
+  }
+});
+
+/*
+  REZZKIY MARKET
+  Запуск сайта и Telegram Mini App
+*/
 
 app.use(express.static(DIR));
 
