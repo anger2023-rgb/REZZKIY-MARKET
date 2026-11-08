@@ -379,6 +379,14 @@ async function initDb(){
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_carts(
+      telegram_id BIGINT PRIMARY KEY,
+      items JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   console.log('Database ready');
 }
 
@@ -1498,11 +1506,7 @@ app.get('/api/admin/payouts',admin,async(q,r)=>{
     });
   }catch(e){
     console.error('Payouts:',e);
-    bad(
-      r,
-      500,
-      'Ошибка статистики выплат'
-    );
+    bad(r,500,'Ошибка статистики выплат');
   }
 });
 
@@ -1640,28 +1644,14 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       }
     }
 
-    console.error(
-      'Payout completion:',
-      e
-    );
-
-    bad(
-      r,
-      500,
-      'Не удалось завершить выплату'
-    );
+    console.error('Payout completion:',e);
+    bad(r,500,'Не удалось завершить выплату');
   }finally{
     if(client){
       client.release();
     }
   }
 });
-
-/*
-  REZZKIY MARKET — USDT PAYMENTS
-  Курс задаётся администратором.
-  Сумма и реквизиты фиксируются при создании счёта.
-*/
 
 function validUsdtAddress(network,address){
   if(network==='TRC20'){
@@ -1733,229 +1723,117 @@ app.put('/api/admin/payment-settings',admin,async(q,r)=>{
 });
 
 /*
-  Создание счёта:
-  - цены берутся только из базы данных;
-  - проверяется наличие товаров;
-  - курс и адрес сохраняются в счёте;
-  - сумма округляется вверх до 0.01 USDT.
+  Постоянная корзина пользователя.
+  Данные хранятся в PostgreSQL.
 */
-app.post('/api/orders/usdt',user,async(q,r)=>{
-  const ids=q.body?.productIds;
-  const network=q.body?.network;
 
-  if(
-    !['TRC20','BEP20'].includes(network)||
-    !Array.isArray(ids)||
-    ids.length<1||
-    ids.length>50||
-    ids.some(id=>!validId(id))||
-    new Set(ids.map(String)).size!==ids.length
-  ){
-    return bad(r,400,'Проверь товары и сеть оплаты');
-  }
-
-  let client;
-
-  try{
-    client=await pool.connect();
-    await client.query('BEGIN');
-
-    const settings=await client.query(
-      `SELECT rate_kopecks,trc20_address,bep20_address
-       FROM usdt_settings WHERE id=1`
-    );
-
-    const config=settings.rows[0];
-
-    if(!config){
-      await client.query('ROLLBACK');
-      return bad(r,503,'Настройки USDT недоступны');
-    }
-
-    const address=network==='TRC20'
-      ?config.trc20_address
-      :config.bep20_address;
-
-    if(!validUsdtAddress(network,address)){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Кошелёк этой сети ещё не настроен');
-    }
-
-    const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity
-       FROM products
-       WHERE id=ANY($1::bigint[])
-       FOR UPDATE`,
-      [ids]
-    );
-
-    if(products.rowCount!==ids.length){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Некоторые товары уже недоступны');
-    }
-
-    if(products.rows.some(p=>p.quantity<1)){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Один из товаров закончился');
-    }
-
-    const items=ids.map(id=>{
-      const p=products.rows.find(
-        x=>String(x.id)===String(id)
-      );
-
-      return {
-        product_id:p.id,
-        weapon:p.weapon,
-        skin:p.skin,
-        condition:p.condition,
-        price:p.price,
-        quantity:1
-      };
-    });
-
-    const total=items.reduce(
-      (sum,item)=>sum+Number(item.price),0
-    );
-
-    const rate=Number(config.rate_kopecks);
-
-    if(
-      !Number.isSafeInteger(total)||
-      total<1||
-      total>2147483647||
-      !Number.isSafeInteger(rate)||
-      rate<1
-    ){
-      await client.query('ROLLBACK');
-      return bad(r,400,'Неверная сумма заказа');
-    }
-
-    const amountCents=Math.ceil(
-      total*10000/rate
-    );
-
-    const order=await client.query(
-      `INSERT INTO usdt_orders(
-        telegram_id,items,total_rub,rate_kopecks,
-        amount_cents,network,wallet_address
-      )
-      VALUES($1,$2::jsonb,$3,$4,$5,$6,$7)
-      RETURNING
-        id,total_rub,rate_kopecks,amount_cents,
-        network,wallet_address,status,created_at`,
-      [
-        q.telegramUser.id,
-        JSON.stringify(items),
-        total,
-        rate,
-        amountCents,
-        network,
-        address
-      ]
-    );
-
-    await client.query('COMMIT');
-
-    r.status(201).json(order.rows[0]);
-  }catch(e){
-    if(client){
-      try{
-        await client.query('ROLLBACK');
-      }catch{}
-    }
-
-    console.error('Create USDT order:',e);
-    bad(r,500,'Не удалось создать счёт');
-  }finally{
-    if(client)client.release();
-  }
-});
-
-app.post('/api/orders/:id/reported',user,async(q,r)=>{
-  if(!validId(q.params.id)){
-    return bad(r,400,'Неверный номер счёта');
-  }
-
+app.get('/api/cart',user,async(q,r)=>{
   try{
     const x=await pool.query(
-      `UPDATE usdt_orders
-       SET status='review',
-           reported_at=NOW()
-       WHERE id=$1
-         AND telegram_id=$2
-         AND status='awaiting'
-       RETURNING id,status,reported_at`,
-      [q.params.id,q.telegramUser.id]
-    );
-
-    if(!x.rowCount){
-      return bad(r,409,'Счёт уже отправлен на проверку');
-    }
-
-    r.json(x.rows[0]);
-  }catch(e){
-    console.error('Report USDT payment:',e);
-    bad(r,500,'Ошибка отправки на проверку');
-  }
-});
-
-app.get('/api/admin/orders',admin,async(q,r)=>{
-  try{
-    const x=await pool.query(
-      `SELECT *
-       FROM usdt_orders
-       ORDER BY
-         CASE WHEN status='review' THEN 0 ELSE 1 END,
-         created_at DESC
-       LIMIT 200`
+      `SELECT items,updated_at
+       FROM user_carts
+       WHERE telegram_id=$1`,
+      [q.telegramUser.id]
     );
 
     r.set('Cache-Control','no-store');
-    r.json(x.rows);
+
+    r.json({
+      items:x.rows[0]?.items||[],
+      updated_at:x.rows[0]?.updated_at||null
+    });
   }catch(e){
-    console.error('Admin USDT orders:',e);
-    bad(r,500,'Ошибка списка платежей');
+    console.error('Load cart:',e);
+    bad(r,500,'Не удалось загрузить корзину');
   }
 });
 
-app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
-  const status=q.body?.status;
+app.put('/api/cart',user,async(q,r)=>{
+  const items=q.body?.items;
 
   if(
-    !validId(q.params.id)||
-    !['paid','rejected'].includes(status)||
-    q.body?.confirmed!==true
+    !Array.isArray(items)||
+    items.length>100||
+    items.some(id=>!validId(id))
   ){
-    return bad(r,400,'Подтверди решение');
+    return bad(r,400,'Некорректная корзина');
   }
+
+  const normalized=items.map(String);
 
   try{
     const x=await pool.query(
-      `UPDATE usdt_orders
-       SET status=$1,
-           reviewed_at=NOW(),
-           reviewed_by=$2
-       WHERE id=$3
-         AND status='review'
-       RETURNING id,status,reviewed_at`,
-      [status,q.admin.id,q.params.id]
+      `INSERT INTO user_carts(
+        telegram_id,
+        items,
+        updated_at
+      )
+      VALUES($1,$2::jsonb,NOW())
+      ON CONFLICT(telegram_id)
+      DO UPDATE SET
+        items=EXCLUDED.items,
+        updated_at=NOW()
+      RETURNING items,updated_at`,
+      [
+        q.telegramUser.id,
+        JSON.stringify(normalized)
+      ]
     );
 
-    if(!x.rowCount){
-      return bad(r,409,'Платёж уже обработан');
-    }
+    r.set('Cache-Control','no-store');
 
-    r.json(x.rows[0]);
+    r.json({
+      success:true,
+      items:x.rows[0].items,
+      updated_at:x.rows[0].updated_at
+    });
   }catch(e){
-    console.error('Review USDT payment:',e);
-    bad(r,500,'Ошибка подтверждения платежа');
+    console.error('Save cart:',e);
+    bad(r,500,'Не удалось сохранить корзину');
   }
 });
 
 /*
-  REZZKIY MARKET
-  Запуск сайта и Telegram Mini App
+  История заказов покупателя.
+  Каждый пользователь видит только свои заказы.
+*/
+
+app.get('/api/orders/my',user,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      `SELECT
+        id,
+        items,
+        total_rub,
+        rate_kopecks,
+        amount_cents,
+        network,
+        wallet_address,
+        status,
+        created_at,
+        reported_at,
+        reviewed_at
+       FROM usdt_orders
+       WHERE telegram_id=$1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [q.telegramUser.id]
+    );
+
+    r.set('Cache-Control','no-store');
+
+    r.json({
+      orders:x.rows,
+      count:x.rowCount
+    });
+  }catch(e){
+    console.error('Order history:',e);
+    bad(r,500,'Не удалось загрузить историю заказов');
+  }
+});
+
+/*
+  Запуск Telegram Mini App.
 */
 
 app.use(express.static(DIR));
