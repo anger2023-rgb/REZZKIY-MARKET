@@ -387,6 +387,22 @@ async function initDb(){
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS skin_withdrawals(
+      id BIGSERIAL PRIMARY KEY,
+      order_id BIGINT NOT NULL UNIQUE REFERENCES usdt_orders(id),
+      telegram_id BIGINT NOT NULL,
+      telegram_username TEXT,
+      telegram_name TEXT,
+      trade_url TEXT NOT NULL,
+      items JSONB NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      sent_at TIMESTAMPTZ,
+      sent_by BIGINT
+    )
+  `);
+
   console.log('Database ready');
 }
 
@@ -1012,6 +1028,7 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
   try{
     const id=await steamFor(q.telegramUser.id);
+
     const cache=inventoryCache.get(
       String(q.telegramUser.id)
     );
@@ -1534,13 +1551,18 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
     !validId(q.params.id)||
     q.body?.confirmed!==true
   ){
-    return bad(r,400,'Требуется подтверждение');
+    return bad(
+      r,
+      400,
+      'Требуется подтверждение'
+    );
   }
 
   let client;
 
   try{
     client=await pool.connect();
+
     await client.query('BEGIN');
 
     const x=await client.query(
@@ -1563,26 +1585,48 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       !x.rows[0].payment_details
     ){
       await client.query('ROLLBACK');
-      return bad(r,409,'Заявка недоступна для выплаты');
+
+      return bad(
+        r,
+        409,
+        'Заявка недоступна для выплаты'
+      );
     }
 
     const row=x.rows[0];
 
-    if(new Date(row.payout_due_at).getTime()>Date.now()){
+    if(
+      new Date(row.payout_due_at).getTime()>
+      Date.now()
+    ){
       await client.query('ROLLBACK');
-      return bad(r,409,'Семь суток ещё не истекли');
+
+      return bad(
+        r,
+        409,
+        'Семь суток ещё не истекли'
+      );
     }
 
-    const payment=decrypt(row.payment_details);
+    const payment=decrypt(
+      row.payment_details
+    );
 
     if(payment.method==='BALANCE'){
       await client.query(
         `INSERT INTO balance_ledger(
-          telegram_id,request_id,amount_rub
+          telegram_id,
+          request_id,
+          amount_rub
         )
         VALUES($1,$2,$3)
-        ON CONFLICT(request_id) DO NOTHING`,
-        [row.telegram_id,row.id,row.offer_rub]
+        ON CONFLICT(request_id)
+        DO NOTHING`,
+        [
+          row.telegram_id,
+          row.id,
+          row.offer_rub
+        ]
       );
     }
 
@@ -1593,7 +1637,10 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
            paid_by=$1,
            updated_at=NOW()
        WHERE id=$2`,
-      [q.admin.id,row.id]
+      [
+        q.admin.id,
+        row.id
+      ]
     );
 
     await client.query('COMMIT');
@@ -1607,13 +1654,19 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       try{
         await client.query('ROLLBACK');
       }catch(rollbackError){
-        console.error('Rollback failed:',rollbackError);
+        console.error(
+          'Rollback failed:',
+          rollbackError
+        );
       }
     }
+
     console.error('Payout completion:',e);
     bad(r,500,'Не удалось завершить выплату');
   }finally{
-    if(client)client.release();
+    if(client){
+      client.release();
+    }
   }
 });
 
@@ -1686,216 +1739,164 @@ app.put('/api/admin/payment-settings',admin,async(q,r)=>{
   }
 });
 
-/*
-  Создание счёта USDT.
-*/
-
+/* USDT invoice and order routes */
 app.post('/api/orders/usdt',user,async(q,r)=>{
   const ids=q.body?.productIds;
   const network=q.body?.network;
-
-  if(
-    !['TRC20','BEP20'].includes(network)||
-    !Array.isArray(ids)||
-    ids.length<1||
-    ids.length>50||
-    ids.some(id=>!validId(id))||
-    new Set(ids.map(String)).size!==ids.length
-  ){
+  if(!['TRC20','BEP20'].includes(network)||!Array.isArray(ids)||ids.length<1||ids.length>50||ids.some(id=>!validId(id))||new Set(ids.map(String)).size!==ids.length){
     return bad(r,400,'Проверь товары и сеть оплаты');
   }
-
   let client;
-
   try{
     client=await pool.connect();
     await client.query('BEGIN');
-
-    const settings=await client.query(
-      `SELECT rate_kopecks,trc20_address,bep20_address
-       FROM usdt_settings WHERE id=1`
-    );
-
+    const settings=await client.query('SELECT rate_kopecks,trc20_address,bep20_address FROM usdt_settings WHERE id=1');
     const config=settings.rows[0];
-
-    if(!config){
-      await client.query('ROLLBACK');
-      return bad(r,503,'Настройки USDT недоступны');
-    }
-
-    const address=network==='TRC20'
-      ?config.trc20_address
-      :config.bep20_address;
-
-    if(!validUsdtAddress(network,address)){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Кошелёк этой сети ещё не настроен');
-    }
-
-    const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity
-       FROM products
-       WHERE id=ANY($1::bigint[])
-       FOR UPDATE`,
-      [ids]
-    );
-
-    if(products.rowCount!==ids.length){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Некоторые товары уже недоступны');
-    }
-
-    if(products.rows.some(p=>p.quantity<1)){
-      await client.query('ROLLBACK');
-      return bad(r,409,'Один из товаров закончился');
-    }
-
+    if(!config){await client.query('ROLLBACK');return bad(r,503,'Настройки USDT недоступны');}
+    const address=network==='TRC20'?config.trc20_address:config.bep20_address;
+    if(!validUsdtAddress(network,address)){await client.query('ROLLBACK');return bad(r,409,'Кошелёк этой сети ещё не настроен');}
+    const products=await client.query('SELECT id,weapon,skin,condition,price,quantity FROM products WHERE id=ANY($1::bigint[]) FOR UPDATE',[ids]);
+    if(products.rowCount!==ids.length){await client.query('ROLLBACK');return bad(r,409,'Некоторые товары уже недоступны');}
+    if(products.rows.some(p=>p.quantity<1)){await client.query('ROLLBACK');return bad(r,409,'Один из товаров закончился');}
     const items=ids.map(id=>{
-      const p=products.rows.find(
-        x=>String(x.id)===String(id)
-      );
-
-      return {
-        product_id:p.id,
-        weapon:p.weapon,
-        skin:p.skin,
-        condition:p.condition,
-        price:p.price,
-        quantity:1
-      };
+      const p=products.rows.find(x=>String(x.id)===String(id));
+      return {product_id:p.id,weapon:p.weapon,skin:p.skin,condition:p.condition,price:p.price,quantity:1};
     });
-
-    const total=items.reduce(
-      (sum,item)=>sum+Number(item.price),0
-    );
-
+    const total=items.reduce((sum,item)=>sum+Number(item.price),0);
     const rate=Number(config.rate_kopecks);
-
-    if(
-      !Number.isSafeInteger(total)||
-      total<1||
-      total>2147483647||
-      !Number.isSafeInteger(rate)||
-      rate<1
-    ){
-      await client.query('ROLLBACK');
-      return bad(r,400,'Неверная сумма заказа');
+    if(!Number.isSafeInteger(total)||total<1||total>2147483647||!Number.isSafeInteger(rate)||rate<1){
+      await client.query('ROLLBACK');return bad(r,400,'Неверная сумма заказа');
     }
-
     const amountCents=Math.ceil(total*10000/rate);
-
     const order=await client.query(
-      `INSERT INTO usdt_orders(
-        telegram_id,items,total_rub,rate_kopecks,
-        amount_cents,network,wallet_address
-       )
+      `INSERT INTO usdt_orders(telegram_id,items,total_rub,rate_kopecks,amount_cents,network,wallet_address)
        VALUES($1,$2::jsonb,$3,$4,$5,$6,$7)
-       RETURNING
-        id,total_rub,rate_kopecks,amount_cents,
-        network,wallet_address,status,created_at`,
-      [
-        q.telegramUser.id,
-        JSON.stringify(items),
-        total,
-        rate,
-        amountCents,
-        network,
-        address
-      ]
+       RETURNING id,total_rub,rate_kopecks,amount_cents,network,wallet_address,status,created_at`,
+      [q.telegramUser.id,JSON.stringify(items),total,rate,amountCents,network,address]
     );
-
     await client.query('COMMIT');
     r.status(201).json(order.rows[0]);
   }catch(e){
-    if(client){
-      try{
-        await client.query('ROLLBACK');
-      }catch{}
-    }
-
+    if(client){try{await client.query('ROLLBACK');}catch{}}
     console.error('Create USDT order:',e);
     bad(r,500,'Не удалось создать счёт');
-  }finally{
-    if(client)client.release();
-  }
+  }finally{if(client)client.release();}
 });
 
 app.post('/api/orders/:id/reported',user,async(q,r)=>{
-  if(!validId(q.params.id)){
-    return bad(r,400,'Неверный номер счёта');
-  }
-
+  if(!validId(q.params.id))return bad(r,400,'Неверный номер счёта');
   try{
     const x=await pool.query(
-      `UPDATE usdt_orders
-       SET status='review',reported_at=NOW()
-       WHERE id=$1
-         AND telegram_id=$2
-         AND status='awaiting'
+      `UPDATE usdt_orders SET status='review',reported_at=NOW()
+       WHERE id=$1 AND telegram_id=$2 AND status='awaiting'
        RETURNING id,status,reported_at`,
       [q.params.id,q.telegramUser.id]
     );
-
-    if(!x.rowCount){
-      return bad(r,409,'Счёт уже отправлен на проверку');
-    }
-
+    if(!x.rowCount)return bad(r,409,'Счёт уже отправлен на проверку');
     r.json(x.rows[0]);
-  }catch(e){
-    console.error('Report USDT payment:',e);
-    bad(r,500,'Ошибка отправки на проверку');
-  }
+  }catch(e){console.error('Report USDT payment:',e);bad(r,500,'Ошибка отправки на проверку');}
 });
 
 app.get('/api/admin/orders',admin,async(q,r)=>{
   try{
     const x=await pool.query(
       `SELECT * FROM usdt_orders
-       ORDER BY
-         CASE WHEN status='review' THEN 0 ELSE 1 END,
-         created_at DESC
-       LIMIT 200`
+       ORDER BY CASE WHEN status='review' THEN 0 ELSE 1 END,created_at DESC LIMIT 200`
     );
-
     r.set('Cache-Control','no-store');
     r.json(x.rows);
-  }catch(e){
-    console.error('Admin USDT orders:',e);
-    bad(r,500,'Ошибка списка платежей');
-  }
+  }catch(e){console.error('Admin USDT orders:',e);bad(r,500,'Ошибка списка платежей');}
 });
 
 app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
   const status=q.body?.status;
-
-  if(
-    !validId(q.params.id)||
-    !['paid','rejected'].includes(status)||
-    q.body?.confirmed!==true
-  ){
+  if(!validId(q.params.id)||!['paid','rejected'].includes(status)||q.body?.confirmed!==true){
     return bad(r,400,'Подтверди решение');
   }
-
   try{
     const x=await pool.query(
-      `UPDATE usdt_orders
-       SET status=$1,
-           reviewed_at=NOW(),
-           reviewed_by=$2
-       WHERE id=$3 AND status='review'
-       RETURNING id,status,reviewed_at`,
+      `UPDATE usdt_orders SET status=$1,reviewed_at=NOW(),reviewed_by=$2
+       WHERE id=$3 AND status='review' RETURNING id,status,reviewed_at`,
       [status,q.admin.id,q.params.id]
     );
-
-    if(!x.rowCount){
-      return bad(r,409,'Платёж уже обработан');
-    }
-
+    if(!x.rowCount)return bad(r,409,'Платёж уже обработан');
     r.json(x.rows[0]);
+  }catch(e){console.error('Review USDT payment:',e);bad(r,500,'Ошибка подтверждения платежа');}
+});
+
+/* Вывод оплаченных скинов: заявку может создать только покупатель. */
+function parseSteamTradeUrl(raw){
+  if(typeof raw!=='string'||raw.length>500)return null;
+  try{
+    const u=new URL(raw.trim());
+    if(u.protocol!=='https:'||u.hostname!=='steamcommunity.com'||
+       !['/tradeoffer/new','/tradeoffer/new/'].includes(u.pathname))return null;
+    const partner=u.searchParams.get('partner');
+    const token=u.searchParams.get('token');
+    if(!/^\d{1,20}$/.test(partner||'')||!/^[A-Za-z0-9_-]{5,100}$/.test(token||''))return null;
+    return 'https://steamcommunity.com/tradeoffer/new/?partner='+partner+'&token='+token;
+  }catch{return null;}
+}
+
+app.post('/api/orders/:id/withdraw',user,async(q,r)=>{
+  if(!validId(q.params.id))return bad(r,400,'Неверный заказ');
+  const tradeUrl=parseSteamTradeUrl(q.body?.trade_url);
+  if(!tradeUrl)return bad(r,400,'Неверная Steam Trade URL');
+  const tgUser=q.telegramUser;
+  const username=String(tgUser.username||'').slice(0,100);
+  const name=[tgUser.first_name,tgUser.last_name].filter(Boolean).join(' ').slice(0,200);
+  let client;
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+    const order=await client.query(
+      `SELECT id,telegram_id,items,status FROM usdt_orders
+       WHERE id=$1 AND telegram_id=$2 FOR UPDATE`,
+      [q.params.id,tgUser.id]
+    );
+    if(!order.rowCount){await client.query('ROLLBACK');return bad(r,404,'Заказ не найден');}
+    if(order.rows[0].status!=='paid'){
+      await client.query('ROLLBACK');return bad(r,409,'Оплата ещё не подтверждена');
+    }
+    const created=await client.query(
+      `INSERT INTO skin_withdrawals(order_id,telegram_id,telegram_username,telegram_name,trade_url,items)
+       VALUES($1,$2,$3,$4,$5,$6::jsonb)
+       ON CONFLICT(order_id) DO NOTHING RETURNING id,status`,
+      [order.rows[0].id,tgUser.id,username,name,tradeUrl,JSON.stringify(order.rows[0].items)]
+    );
+    if(!created.rowCount){
+      await client.query('ROLLBACK');return bad(r,409,'Заявка на вывод уже создана');
+    }
+    await client.query('COMMIT');
+    r.status(201).json(created.rows[0]);
   }catch(e){
-    console.error('Review USDT payment:',e);
-    bad(r,500,'Ошибка подтверждения платежа');
-  }
+    if(client)try{await client.query('ROLLBACK')}catch{}
+    console.error('Withdraw:',e);bad(r,500,'Не удалось создать заявку');
+  }finally{if(client)client.release();}
+});
+
+app.get('/api/admin/withdrawals',admin,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      `SELECT w.*,o.total_rub FROM skin_withdrawals w
+       JOIN usdt_orders o ON o.id=w.order_id
+       ORDER BY CASE WHEN w.status='pending' THEN 0 ELSE 1 END,w.created_at DESC LIMIT 200`
+    );
+    r.set('Cache-Control','no-store');r.json(x.rows);
+  }catch(e){console.error(e);bad(r,500,'Ошибка заявок на вывод');}
+});
+
+app.post('/api/admin/withdrawals/:id/sent',admin,async(q,r)=>{
+  if(!validId(q.params.id)||q.body?.confirmed!==true)return bad(r,400,'Подтверди отправку');
+  try{
+    const x=await pool.query(
+      `UPDATE skin_withdrawals SET status='sent',sent_at=NOW(),sent_by=$1
+       WHERE id=$2 AND status='pending' RETURNING id,status,sent_at`,
+      [q.admin.id,q.params.id]
+    );
+    if(!x.rowCount)return bad(r,409,'Заявка уже обработана');
+    r.json(x.rows[0]);
+  }catch(e){console.error(e);bad(r,500,'Ошибка подтверждения отправки');}
 });
 
 /*
@@ -1988,7 +1989,8 @@ app.get('/api/orders/my',user,async(q,r)=>{
         status,
         created_at,
         reported_at,
-        reviewed_at
+        reviewed_at,
+        (SELECT status FROM skin_withdrawals w WHERE w.order_id=usdt_orders.id) AS withdrawal_status
        FROM usdt_orders
        WHERE telegram_id=$1
        ORDER BY created_at DESC
