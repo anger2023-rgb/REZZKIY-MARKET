@@ -155,25 +155,38 @@ const usdtAmount=x=>(Number(x)/100).toFixed(2);
 async function copyUsdt(value){try{await navigator.clipboard.writeText(String(value));alert('Скопировано')}catch{alert('Не удалось скопировать автоматически. Удерживай текст для копирования.')}}
 let lastUsdtOrder=null;
 let cartSaveQueue=Promise.resolve();
+let cartReady=false;
 function saveCart(){
- const items=cart.map((id,i)=>({id:String(id),selected:cartSelected[i]!==false}));
- cartSaveQueue=cartSaveQueue.catch(()=>{}).then(()=>api('/api/cart',{
-   method:'PUT',body:JSON.stringify({items})
- })).catch(e=>{console.error('Cart save failed:',e);alert('Корзина не сохранена: '+e.message)});
- return cartSaveQueue;
+  if(!cartReady)return Promise.resolve();
+  const items=cart.map(String);
+  cartSaveQueue=cartSaveQueue.catch(()=>{}).then(()=>api('/api/cart',{
+    method:'PUT',body:JSON.stringify({items})
+  }));
+  cartSaveQueue.catch(e=>{
+    console.error('Cart save failed:',e);
+    alert('Корзина не сохранена: '+e.message);
+  });
+  return cartSaveQueue;
 }
 async function restoreCart(){
- try{
-   const data=await api('/api/cart');
-   cart=(data.items||[]).map(x=>String(x.id));
-   cartSelected=(data.items||[]).map(x=>x.selected!==false);
-   renderCart();
- }catch(e){console.error('Cart load failed:',e);alert('Не удалось загрузить корзину: '+e.message)}
+  try{
+    const data=await api('/api/cart');
+    if(!Array.isArray(data.items))throw Error('Некорректный ответ сервера');
+    cart=data.items.map(x=>typeof x==='object'&&x!==null?String(x.id):String(x));
+    cartSelected=data.items.map(x=>typeof x==='object'&&x!==null?x.selected!==false:true);
+    cartReady=true;
+    renderCart();
+  }catch(e){
+    cartReady=false;
+    console.error('Cart load failed:',e);
+    alert('Не удалось загрузить корзину: '+e.message);
+  }
 }
+
 async function loadMyOrders(){
  const box=$('myOrders');box.textContent='Загружаем покупки...';
  try{
-  const orders=await api('/api/orders/my');box.replaceChildren();
+  const result=await api('/api/orders/my');const orders=Array.isArray(result)?result:result.orders; if(!Array.isArray(orders))throw Error('Неверный формат заказов');box.replaceChildren();
   if(!orders.length){box.textContent='Покупок пока нет';return}
   const labels={awaiting:'Ожидает оплаты',review:'Проверяется администратором',paid:'Оплата подтверждена',rejected:'Оплата отклонена'};
   for(const o of orders){
