@@ -74,6 +74,14 @@ nav button{color:#68727f!important}
 nav button.active{color:#f47700!important}
 button:disabled{opacity:.5}
 .usdt-box{background:#fffaf5;border:1px solid #ffd0a8;border-radius:13px;padding:15px;margin:12px 0;overflow-wrap:anywhere}.usdt-box button{margin:7px 0}.usdt-value{font-size:21px;font-weight:900;user-select:all;overflow-wrap:anywhere}
+
+/* Оплата подтверждена — окно получения скинов */
+#paidTradeOverlay{position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.78);display:none;align-items:center;justify-content:center;padding:18px}
+#paidTradeOverlay .paid-trade-card{width:100%;max-width:430px;max-height:90vh;overflow:auto;background:#17171b;color:#fff;border:1px solid #ff7900;border-radius:20px;padding:24px;box-shadow:0 16px 60px #0009}
+#paidTradeOverlay .paid-trade-card h2{margin:8px 0;color:#ff921f}
+#paidTradeOverlay .paid-trade-card input{width:100%;box-sizing:border-box;margin:12px 0;padding:14px;border-radius:10px;border:1px solid #555;background:#25252a;color:white;font-size:14px}
+#paidTradeOverlay .paid-trade-card a{color:#ff921f}
+#paidTradeOverlay .paid-trade-card button{margin-top:10px}
 </style></head><body><header>REZZKIY <span>MARKET</span></header><main>
 <section id="home" class="page active"><img class="logo" src="logo.png" alt="REZZKIY MARKET"><div class="hero"><img src="hero.png" alt="CS2 MARKET"><button class="hero-hit" onclick="go('catalog')" aria-label="Открыть каталог"></button></div><div class="quick"><button onclick="go('catalog')">🛒<br>Купить</button><button onclick="go('sell')">⇄<br>Продать</button><button onclick="go('cart')">🛍<br>Корзина</button><button onclick="go('profile')">♙<br>Профиль</button></div><div class="heading"><h2>Популярное</h2><button class="outline" onclick="go('catalog')">Смотреть все →</button></div><div id="popular" class="grid"></div></section>
 <section id="catalog" class="page"><h2>Каталог скинов</h2><input id="search" placeholder="Поиск скинов..." oninput="renderProducts()"><div id="groupChips" class="chips"></div><div id="weaponChips" class="chips"></div><div id="products" class="grid"></div></section>
@@ -82,7 +90,7 @@ button:disabled{opacity:.5}
 <section id="sell" class="page"><h2>Продать скин</h2><div id="sellRules" class="item" style="border-color:#ff7900"><h2 style="color:#ff921f">⚠ Правила продажи</h2><div class="rules-row"><span class="rules-icon">◷</span><span>Выплата производится по истечении <b>7 суток</b> после подтверждённого получения предметов магазином.</span></div><div class="rules-row"><span class="rules-icon">✕</span><span>При отмене или откате трейда выплата <b>отклоняется</b>.</span></div><div class="rules-row"><span class="rules-icon">◉</span><span>Инвентарь Steam должен быть <b>публичным</b>.</span></div><label class="rules-check"><input id="rulesCheckbox" type="checkbox" onchange="updateRulesButton()"><span>Я ознакомился с правилами продажи и согласен с ними</span></label><button id="rulesContinue" class="btn full" disabled onclick="acceptRules()">Продолжить продажу</button></div><div id="sellWorkspace" style="display:none"><div class="steam-panel"><h3>Мой Steam</h3><div id="steamAccount" class="steam-account" style="display:none"><img id="steamAvatar" class="steam-avatar" alt="Аватар Steam" src="logo.png"><div class="steam-connected">Steam подключён</div><div class="steam-check">✓</div></div><div id="steamStatus" class="status">Проверяем Steam...</div><button id="steamConnectButton" class="btn full" onclick="connectSteam()">Привязать Steam</button><button class="secondary full" onclick="refreshSteamAndInventory()">Проверить подключение</button></div><div class="item"><h3>Мой инвентарь CS2</h3><p class="muted">Доступные для обмена предметы из публичного инвентаря.</p><div id="inventoryLoading" class="inventory-loading" style="display:none"><div class="spinner"></div><span>Загружаем скины Steam...</span></div><p id="inventoryStatus" class="muted"></p><button id="inventoryRetry" class="secondary full retry-btn" onclick="loadInventory()">Повторить загрузку</button><div id="inventoryGrid" class="grid"></div><button id="sellSelected" class="btn full" style="margin-top:15px" disabled onclick="submitBuyout()">Предложить на выкуп (0)</button></div><div class="item"><h3>Мои заявки на выкуп</h3><button class="secondary full" onclick="loadMyBuyouts()">Обновить заявки</button><div id="myBuyouts"></div></div><p class="muted">Передача предметов выполняется через Steam. Администратор вручную проверяет получение. Выплаты автоматически не проводятся.</p></div></section>
 <section id="profile" class="page"><h2>Профиль</h2><div class="profile-card"><div class="steam-profile-head"><img id="profileSteamAvatar" src="logo.png" alt="Steam" class="profile-avatar"><div><h3 id="profileSteamName">Загрузка Steam...</h3><p id="profileSteamId" class="muted">Проверяем подключение</p><p id="userid" class="muted"></p></div></div><button class="secondary full" onclick="go('sell')">Мой Steam и продажа</button></div><div class="profile-stats"><div class="item"><p class="muted">Баланс бота</p><p id="botBalance" class="trade-price">—</p></div><div class="item"><p class="muted">Ожидают выплаты</p><p id="profilePending" class="trade-price">—</p></div></div><div class="item"><h3>Мои продажи</h3><p class="muted">Срок выплаты появляется после подтверждения получения скинов администратором.</p><button class="secondary full" onclick="loadProfile()">Обновить продажи</button><div id="profileSales">Загружаем...</div></div><div class="item"><h3>История выплат</h3><div id="profilePaid">Загружаем...</div></div><div class="item"><h3>Мои покупки</h3><button class="secondary full" onclick="loadMyOrders()">Обновить покупки</button><div id="myOrders">Загружаем...</div></div><button id="adminOpen" class="btn full" style="display:none" onclick="go('admin')">Админ-панель</button></section>
 <section id="admin" class="page"><h2>Управление магазином</h2><div class="admin-menu"><button class="admin-menu-btn active" data-admin-tab="requests" onclick="adminTab('requests')"><strong>Заявки на выкуп</strong><small>Просмотр и оценка предложений</small></button><button class="admin-menu-btn" data-admin-tab="payouts" onclick="adminTab('payouts')"><strong>Ожидающие выплаты</strong><small>Подтверждённые трейды и 7 суток</small></button><button class="admin-menu-btn" data-admin-tab="usdt" onclick="adminTab('usdt')"><strong>Оплата USDT</strong><small>Курс, кошельки и заказы</small></button><button class="admin-menu-btn" data-admin-tab="withdrawals" onclick="adminTab('withdrawals')"><strong>Вывод скинов</strong><small>Трейд-ссылки и выдача покупок</small></button><button class="admin-menu-btn" data-admin-tab="products"  onclick="adminTab('products')"><strong>Выставить скин</strong><small>Добавление и управление товарами</small></button></div><div id="adminTabRequests" class="admin-tab"><div class="admin-box"><h3>Заявки на выкуп</h3><button class="secondary full" onclick="loadAdminBuyouts()">Обновить заявки</button><div id="adminBuyouts"></div></div></div><div id="adminTabPayouts" class="admin-tab" style="display:none"><div class="admin-box"><h3>Статистика выплат</h3><button class="secondary full" onclick="loadAdminPayouts()">Обновить выплаты</button><div id="payoutStats"></div><div id="payoutList"></div></div></div><div id="adminTabUsdt" class="admin-tab" style="display:none"><div class="admin-box"><h3>Настройки USDT</h3><label>Курс ₽ за 1 USDT</label><input id="usdtRate" type="number" step=".01" min=".01"><label>Адрес TRC20</label><input id="usdtTrc"><label>Адрес BEP20</label><input id="usdtBep"><button class="btn full" onclick="saveUsdtSettings()">Сохранить</button><p id="usdtSettingsStatus" class="muted"></p></div><div class="admin-box"><h3>Заказы USDT</h3><button class="secondary full" onclick="loadUsdtOrders()">Обновить</button><div id="usdtOrders"></div></div></div><div id="adminTabWithdrawals" class="admin-tab" style="display:none"><div class="admin-box"><h3>Заявки на вывод скинов</h3><button class="secondary full" onclick="loadAdminWithdrawals()">Обновить заявки</button><div id="withdrawalRequests"></div></div></div><div id="adminTabProducts"  class="admin-tab" style="display:none"><div class="admin-box"><h3>Добавить скин в каталог</h3><label>Оружие</label><select id="adminWeapon"></select><label>Название скина</label><input id="adminSkin" placeholder="Например: Redline"><label>Состояние</label><select id="adminCondition"><option>Factory New</option><option>Minimal Wear</option><option>Field-Tested</option><option>Well-Worn</option><option>Battle-Scarred</option><option>Not Painted</option></select><label>Цена, ₽</label><input id="adminPrice" type="number" min="1" placeholder="1000"><label>Количество</label><input id="adminQuantity" type="number" min="0" value="1"><label>Фотография</label><input id="adminPhoto" type="file" accept="image/png,image/jpeg,image/webp"><img id="photoPreview" style="display:none;width:100%;max-height:220px;object-fit:contain" alt="Предпросмотр"><button id="addProductButton" class="btn full" onclick="addProduct()">Добавить товар</button><p id="adminStatus" class="muted"></p></div><div class="admin-box"><h3>Товары магазина</h3><div id="adminProducts"></div></div></div></section>
-</main><div id="paymentOverlay" class="pay-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="paymentTitle" onclick="if(event.target===this)closePayment()"><div class="pay-sheet">
+</main><div id="paidTradeOverlay" role="dialog" aria-modal="true" aria-labelledby="paidTradeTitle"><div class="paid-trade-card"><div style="text-align:right"><button class="secondary" onclick="closePaidTrade()" aria-label="Закрыть">×</button></div><div style="font-size:38px;text-align:center">✓</div><h2 id="paidTradeTitle" style="text-align:center">Оплата подтверждена!</h2><p style="text-align:center">Чек оплачен. Введите трейд-ссылку Steam, чтобы получить купленные скины.</p><p id="paidTradeOrder" class="muted"></p><div id="paidTradeItems" class="muted"></div><label for="paidTradeInput"><strong>Ваша Steam Trade URL</strong></label><p><a href="https://steamcommunity.com/my/tradeoffers/privacy" target="_blank" rel="noopener noreferrer" onclick="if(window.Telegram?.WebApp?.openLink){event.preventDefault();window.Telegram.WebApp.openLink(this.href)}">ⓘ Где найти трейд-ссылку?</a></p><input id="paidTradeInput" type="url" autocomplete="off" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=...&token=..."><p id="paidTradeError" style="color:#ff8888"></p><button id="paidTradeSubmit" class="btn full" onclick="submitPaidTrade()">Вывести скины</button><button class="secondary full" onclick="closePaidTrade()">Позже</button></div></div><div id="paymentOverlay" class="pay-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="paymentTitle" onclick="if(event.target===this)closePayment()"><div class="pay-sheet">
 <div class="pay-header"><h2 id="paymentTitle">Способ оплаты</h2><button class="pay-close" onclick="closePayment()" aria-label="Закрыть">×</button></div>
 <div class="pay-total"><span>К оплате</span><strong id="paymentAmount">0 ₽</strong></div>
 <button class="pay-choice" onclick="choosePayment('BALANCE')"><span class="pay-choice-icon">◉</span><span><strong>С баланса бота</strong><small>Использовать внутренний баланс</small></span></button>
@@ -361,4 +369,67 @@ function drawProfileSales(){const sales=$('profileSales'),paid=$('profilePaid');
 async function loadProfile(){await Promise.allSettled([checkSteam(),loadBalance()]);try{profileSalesCache=await api('/api/sell/requests');drawProfileSales()}catch(e){$('profileSales').textContent='Не удалось загрузить продажи: '+e.message;$('profilePaid').textContent='—';$('profilePending').textContent='—'}}
 setInterval(()=>{if(document.getElementById('profile').classList.contains('active')&&profileSalesCache.some(r=>r.status==='received'))drawProfileSales()},60000);
 async function init(){const u=tg?.initDataUnsafe?.user;if(u){$('userid').textContent='Telegram ID: '+u.id}try{categories=await api('/api/categories');renderFilters();fillAdminWeapons()}catch(e){console.error(e)}await checkAdmin();await loadProducts();await restoreCart();const steamResult=new URLSearchParams(location.search).get('steam');if(steamResult){history.replaceState(null,'',location.pathname);go('sell');alert(steamResult==='success'?'Steam успешно привязан!':'Не удалось привязать Steam.')}}init();
+
+/* Автоматическое подтверждение оплаты и переход к выводу */
+let activePaidTrade=null;
+let paidTradeBusy=false;
+let paidTradeChecking=false;
+function closePaidTrade(){
+ if(activePaidTrade)sessionStorage.setItem('rezz_trade_dismissed_'+activePaidTrade.id,'1');
+ $('paidTradeOverlay').style.display='none';activePaidTrade=null;
+}
+function openPaidTrade(order){
+ if(activePaidTrade?.id===order.id)return;
+ activePaidTrade=order;
+ $('paymentOverlay').style.display='none';
+ $('paidTradeOrder').textContent='Заказ №'+order.id+' · '+money(order.total_rub);
+ $('paidTradeItems').textContent=(order.items||[]).map(x=>(x.weapon||'CS2')+' | '+(x.skin||'')).join(', ');
+ $('paidTradeInput').value='';$('paidTradeError').textContent='';
+ $('paidTradeSubmit').disabled=false;
+ $('paidTradeOverlay').style.display='flex';
+}
+async function submitPaidTrade(){
+ const order=activePaidTrade;if(!order)return;
+ const input=$('paidTradeInput').value.trim();
+ const btn=$('paidTradeSubmit');btn.disabled=true;$('paidTradeError').textContent='';
+ try{
+  await api('/api/orders/'+order.id+'/withdraw',{method:'POST',body:JSON.stringify({trade_url:input})});
+  sessionStorage.setItem('rezz_trade_dismissed_'+order.id,'1');
+  $('paidTradeOverlay').style.display='none';activePaidTrade=null;
+  alert('Заявка на вывод отправлена! Ожидайте передачи скинов через Steam.');
+  if($('profile').classList.contains('active'))await loadMyOrders();
+ }catch(e){$('paidTradeError').textContent=e.message;btn.disabled=false}
+}
+async function checkPaidPurchases(){
+ if(paidTradeChecking||paidTradeBusy||!tg?.initData)return;
+ paidTradeChecking=true;
+ try{
+  const result=await api('/api/orders/my');
+  const orders=Array.isArray(result)?result:result.orders||[];
+  for(const order of orders){
+   if(order.status!=='paid')continue;
+   const key='rezz_paid_cart_cleared_'+order.id;
+   if(!localStorage.getItem(key)){
+    const purchased=(order.items||[]).map(x=>String(x.product_id));
+    const remaining=[...purchased];
+    const nextCart=[],nextSelected=[];
+    for(let i=0;i<cart.length;i++){
+     const pos=remaining.indexOf(String(cart[i]));
+     if(pos>=0){remaining.splice(pos,1)}
+     else{nextCart.push(cart[i]);nextSelected.push(cartSelected[i])}
+    }
+    cart=nextCart;cartSelected=nextSelected;
+    await saveCart();renderCart();
+    localStorage.setItem(key,'1');
+   }
+   if(!order.withdrawal_status&&!sessionStorage.getItem('rezz_trade_dismissed_'+order.id)&&!activePaidTrade){
+    openPaidTrade(order);break;
+   }
+  }
+ }catch(e){console.warn('Payment status check:',e.message)}
+ finally{paidTradeChecking=false}
+}
+setInterval(()=>{if(!document.hidden)checkPaidPurchases()},5000);
+setTimeout(checkPaidPurchases,2500);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkPaidPurchases()});
 </script></body></html>
