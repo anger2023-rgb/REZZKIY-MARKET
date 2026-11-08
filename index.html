@@ -375,11 +375,12 @@ let activePaidTrade=null;
 let paidTradeBusy=false;
 let paidTradeChecking=false;
 function closePaidTrade(){
- if(activePaidTrade)sessionStorage.setItem('rezz_trade_dismissed_'+activePaidTrade.id,'1');
+ if(activePaidTrade)localStorage.setItem('rezz_trade_shown_'+activePaidTrade.id,'1');
  $('paidTradeOverlay').style.display='none';activePaidTrade=null;
 }
 function openPaidTrade(order){
  if(activePaidTrade?.id===order.id)return;
+ localStorage.setItem('rezz_trade_shown_'+order.id,'1');
  activePaidTrade=order;
  $('paymentOverlay').style.display='none';
  $('paidTradeOrder').textContent='Заказ №'+order.id+' · '+money(order.total_rub);
@@ -394,7 +395,7 @@ async function submitPaidTrade(){
  const btn=$('paidTradeSubmit');btn.disabled=true;$('paidTradeError').textContent='';
  try{
   await api('/api/orders/'+order.id+'/withdraw',{method:'POST',body:JSON.stringify({trade_url:input})});
-  sessionStorage.setItem('rezz_trade_dismissed_'+order.id,'1');
+  localStorage.setItem('rezz_trade_shown_'+order.id,'1');
   $('paidTradeOverlay').style.display='none';activePaidTrade=null;
   alert('Заявка на вывод отправлена! Ожидайте передачи скинов через Steam.');
   if($('profile').classList.contains('active'))await loadMyOrders();
@@ -422,7 +423,7 @@ async function checkPaidPurchases(){
     await saveCart();renderCart();
     localStorage.setItem(key,'1');
    }
-   if(!order.withdrawal_status&&!sessionStorage.getItem('rezz_trade_dismissed_'+order.id)&&!activePaidTrade){
+   if(!order.withdrawal_status&&!localStorage.getItem('rezz_trade_shown_'+order.id)&&!activePaidTrade){
     openPaidTrade(order);break;
    }
   }
