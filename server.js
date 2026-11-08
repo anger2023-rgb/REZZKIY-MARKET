@@ -1534,18 +1534,13 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
     !validId(q.params.id)||
     q.body?.confirmed!==true
   ){
-    return bad(
-      r,
-      400,
-      'Требуется подтверждение'
-    );
+    return bad(r,400,'Требуется подтверждение');
   }
 
   let client;
 
   try{
     client=await pool.connect();
-
     await client.query('BEGIN');
 
     const x=await client.query(
@@ -1568,48 +1563,26 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       !x.rows[0].payment_details
     ){
       await client.query('ROLLBACK');
-
-      return bad(
-        r,
-        409,
-        'Заявка недоступна для выплаты'
-      );
+      return bad(r,409,'Заявка недоступна для выплаты');
     }
 
     const row=x.rows[0];
 
-    if(
-      new Date(row.payout_due_at).getTime()>
-      Date.now()
-    ){
+    if(new Date(row.payout_due_at).getTime()>Date.now()){
       await client.query('ROLLBACK');
-
-      return bad(
-        r,
-        409,
-        'Семь суток ещё не истекли'
-      );
+      return bad(r,409,'Семь суток ещё не истекли');
     }
 
-    const payment=decrypt(
-      row.payment_details
-    );
+    const payment=decrypt(row.payment_details);
 
     if(payment.method==='BALANCE'){
       await client.query(
         `INSERT INTO balance_ledger(
-          telegram_id,
-          request_id,
-          amount_rub
+          telegram_id,request_id,amount_rub
         )
         VALUES($1,$2,$3)
-        ON CONFLICT(request_id)
-        DO NOTHING`,
-        [
-          row.telegram_id,
-          row.id,
-          row.offer_rub
-        ]
+        ON CONFLICT(request_id) DO NOTHING`,
+        [row.telegram_id,row.id,row.offer_rub]
       );
     }
 
@@ -1620,10 +1593,7 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
            paid_by=$1,
            updated_at=NOW()
        WHERE id=$2`,
-      [
-        q.admin.id,
-        row.id
-      ]
+      [q.admin.id,row.id]
     );
 
     await client.query('COMMIT');
@@ -1637,19 +1607,13 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
       try{
         await client.query('ROLLBACK');
       }catch(rollbackError){
-        console.error(
-          'Rollback failed:',
-          rollbackError
-        );
+        console.error('Rollback failed:',rollbackError);
       }
     }
-
     console.error('Payout completion:',e);
     bad(r,500,'Не удалось завершить выплату');
   }finally{
-    if(client){
-      client.release();
-    }
+    if(client)client.release();
   }
 });
 
@@ -1719,6 +1683,218 @@ app.put('/api/admin/payment-settings',admin,async(q,r)=>{
   }catch(e){
     console.error('Save USDT settings:',e);
     bad(r,500,'Ошибка сохранения настроек');
+  }
+});
+
+/*
+  Создание счёта USDT.
+*/
+
+app.post('/api/orders/usdt',user,async(q,r)=>{
+  const ids=q.body?.productIds;
+  const network=q.body?.network;
+
+  if(
+    !['TRC20','BEP20'].includes(network)||
+    !Array.isArray(ids)||
+    ids.length<1||
+    ids.length>50||
+    ids.some(id=>!validId(id))||
+    new Set(ids.map(String)).size!==ids.length
+  ){
+    return bad(r,400,'Проверь товары и сеть оплаты');
+  }
+
+  let client;
+
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+
+    const settings=await client.query(
+      `SELECT rate_kopecks,trc20_address,bep20_address
+       FROM usdt_settings WHERE id=1`
+    );
+
+    const config=settings.rows[0];
+
+    if(!config){
+      await client.query('ROLLBACK');
+      return bad(r,503,'Настройки USDT недоступны');
+    }
+
+    const address=network==='TRC20'
+      ?config.trc20_address
+      :config.bep20_address;
+
+    if(!validUsdtAddress(network,address)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Кошелёк этой сети ещё не настроен');
+    }
+
+    const products=await client.query(
+      `SELECT id,weapon,skin,condition,price,quantity
+       FROM products
+       WHERE id=ANY($1::bigint[])
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if(products.rowCount!==ids.length){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Некоторые товары уже недоступны');
+    }
+
+    if(products.rows.some(p=>p.quantity<1)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Один из товаров закончился');
+    }
+
+    const items=ids.map(id=>{
+      const p=products.rows.find(
+        x=>String(x.id)===String(id)
+      );
+
+      return {
+        product_id:p.id,
+        weapon:p.weapon,
+        skin:p.skin,
+        condition:p.condition,
+        price:p.price,
+        quantity:1
+      };
+    });
+
+    const total=items.reduce(
+      (sum,item)=>sum+Number(item.price),0
+    );
+
+    const rate=Number(config.rate_kopecks);
+
+    if(
+      !Number.isSafeInteger(total)||
+      total<1||
+      total>2147483647||
+      !Number.isSafeInteger(rate)||
+      rate<1
+    ){
+      await client.query('ROLLBACK');
+      return bad(r,400,'Неверная сумма заказа');
+    }
+
+    const amountCents=Math.ceil(total*10000/rate);
+
+    const order=await client.query(
+      `INSERT INTO usdt_orders(
+        telegram_id,items,total_rub,rate_kopecks,
+        amount_cents,network,wallet_address
+       )
+       VALUES($1,$2::jsonb,$3,$4,$5,$6,$7)
+       RETURNING
+        id,total_rub,rate_kopecks,amount_cents,
+        network,wallet_address,status,created_at`,
+      [
+        q.telegramUser.id,
+        JSON.stringify(items),
+        total,
+        rate,
+        amountCents,
+        network,
+        address
+      ]
+    );
+
+    await client.query('COMMIT');
+    r.status(201).json(order.rows[0]);
+  }catch(e){
+    if(client){
+      try{
+        await client.query('ROLLBACK');
+      }catch{}
+    }
+
+    console.error('Create USDT order:',e);
+    bad(r,500,'Не удалось создать счёт');
+  }finally{
+    if(client)client.release();
+  }
+});
+
+app.post('/api/orders/:id/reported',user,async(q,r)=>{
+  if(!validId(q.params.id)){
+    return bad(r,400,'Неверный номер счёта');
+  }
+
+  try{
+    const x=await pool.query(
+      `UPDATE usdt_orders
+       SET status='review',reported_at=NOW()
+       WHERE id=$1
+         AND telegram_id=$2
+         AND status='awaiting'
+       RETURNING id,status,reported_at`,
+      [q.params.id,q.telegramUser.id]
+    );
+
+    if(!x.rowCount){
+      return bad(r,409,'Счёт уже отправлен на проверку');
+    }
+
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('Report USDT payment:',e);
+    bad(r,500,'Ошибка отправки на проверку');
+  }
+});
+
+app.get('/api/admin/orders',admin,async(q,r)=>{
+  try{
+    const x=await pool.query(
+      `SELECT * FROM usdt_orders
+       ORDER BY
+         CASE WHEN status='review' THEN 0 ELSE 1 END,
+         created_at DESC
+       LIMIT 200`
+    );
+
+    r.set('Cache-Control','no-store');
+    r.json(x.rows);
+  }catch(e){
+    console.error('Admin USDT orders:',e);
+    bad(r,500,'Ошибка списка платежей');
+  }
+});
+
+app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
+  const status=q.body?.status;
+
+  if(
+    !validId(q.params.id)||
+    !['paid','rejected'].includes(status)||
+    q.body?.confirmed!==true
+  ){
+    return bad(r,400,'Подтверди решение');
+  }
+
+  try{
+    const x=await pool.query(
+      `UPDATE usdt_orders
+       SET status=$1,
+           reviewed_at=NOW(),
+           reviewed_by=$2
+       WHERE id=$3 AND status='review'
+       RETURNING id,status,reviewed_at`,
+      [status,q.admin.id,q.params.id]
+    );
+
+    if(!x.rowCount){
+      return bad(r,409,'Платёж уже обработан');
+    }
+
+    r.json(x.rows[0]);
+  }catch(e){
+    console.error('Review USDT payment:',e);
+    bad(r,500,'Ошибка подтверждения платежа');
   }
 });
 
