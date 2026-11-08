@@ -80,7 +80,7 @@ button:disabled{opacity:.5}
 <section id="details" class="page"><button class="secondary" onclick="go('catalog')">← Назад</button><div id="detailImage"></div><h2 id="detailName"></h2><p id="detailCondition" class="muted"></p><h2 id="detailPrice"></h2><button id="detailBuy" class="btn full">В корзину</button><button class="secondary full" style="margin-top:10px" onclick="go('cart')">Перейти в корзину</button><div class="item"><p>Игра: Counter-Strike 2</p><p class="muted">Реальная покупка и Steam-передача пока не подключены к каталогу.</p></div></section>
 <section id="cart" class="page"><h2>Корзина</h2><div class="cart-select-all"><label><input id="cartSelectAll" type="checkbox" onchange="toggleAllCart(this.checked)"> <strong>Выбрать всё</strong></label><span id="cartSelectedCount" class="muted">0 выбрано</span></div><div id="cartItems"></div><div class="total"><span>К оплате</span><span id="total">0 ₽</span></div><button id="cartPayButton" class="btn full" onclick="checkout()" disabled>Оплатить</button><p class="muted">Оплата пока не подключена. Выбранные скины останутся в корзине.</p></section>
 <section id="sell" class="page"><h2>Продать скин</h2><div id="sellRules" class="item" style="border-color:#ff7900"><h2 style="color:#ff921f">⚠ Правила продажи</h2><div class="rules-row"><span class="rules-icon">◷</span><span>Выплата производится по истечении <b>7 суток</b> после подтверждённого получения предметов магазином.</span></div><div class="rules-row"><span class="rules-icon">✕</span><span>При отмене или откате трейда выплата <b>отклоняется</b>.</span></div><div class="rules-row"><span class="rules-icon">◉</span><span>Инвентарь Steam должен быть <b>публичным</b>.</span></div><label class="rules-check"><input id="rulesCheckbox" type="checkbox" onchange="updateRulesButton()"><span>Я ознакомился с правилами продажи и согласен с ними</span></label><button id="rulesContinue" class="btn full" disabled onclick="acceptRules()">Продолжить продажу</button></div><div id="sellWorkspace" style="display:none"><div class="steam-panel"><h3>Мой Steam</h3><div id="steamAccount" class="steam-account" style="display:none"><img id="steamAvatar" class="steam-avatar" alt="Аватар Steam" src="logo.png"><div class="steam-connected">Steam подключён</div><div class="steam-check">✓</div></div><div id="steamStatus" class="status">Проверяем Steam...</div><button id="steamConnectButton" class="btn full" onclick="connectSteam()">Привязать Steam</button><button class="secondary full" onclick="refreshSteamAndInventory()">Проверить подключение</button></div><div class="item"><h3>Мой инвентарь CS2</h3><p class="muted">Доступные для обмена предметы из публичного инвентаря.</p><div id="inventoryLoading" class="inventory-loading" style="display:none"><div class="spinner"></div><span>Загружаем скины Steam...</span></div><p id="inventoryStatus" class="muted"></p><button id="inventoryRetry" class="secondary full retry-btn" onclick="loadInventory()">Повторить загрузку</button><div id="inventoryGrid" class="grid"></div><button id="sellSelected" class="btn full" style="margin-top:15px" disabled onclick="submitBuyout()">Предложить на выкуп (0)</button></div><div class="item"><h3>Мои заявки на выкуп</h3><button class="secondary full" onclick="loadMyBuyouts()">Обновить заявки</button><div id="myBuyouts"></div></div><p class="muted">Передача предметов выполняется через Steam. Администратор вручную проверяет получение. Выплаты автоматически не проводятся.</p></div></section>
-<section id="profile" class="page"><h2>Профиль</h2><div class="profile-card"><div class="steam-profile-head"><img id="profileSteamAvatar" src="logo.png" alt="Steam" class="profile-avatar"><div><h3 id="profileSteamName">Загрузка Steam...</h3><p id="profileSteamId" class="muted">Проверяем подключение</p><p id="userid" class="muted"></p></div></div><button class="secondary full" onclick="go('sell')">Мой Steam и продажа</button></div><div class="profile-stats"><div class="item"><p class="muted">Баланс бота</p><p id="botBalance" class="trade-price">—</p></div><div class="item"><p class="muted">Ожидают выплаты</p><p id="profilePending" class="trade-price">—</p></div></div><div class="item"><h3>Мои продажи</h3><p class="muted">Срок выплаты появляется после подтверждения получения скинов администратором.</p><button class="secondary full" onclick="loadProfile()">Обновить продажи</button><div id="profileSales">Загружаем...</div></div><div class="item"><h3>История выплат</h3><div id="profilePaid">Загружаем...</div></div><div class="item"><h3>Мои покупки</h3><p class="muted">История покупок появится после подключения оплаты.</p></div><button id="adminOpen" class="btn full" style="display:none" onclick="go('admin')">Админ-панель</button></section>
+<section id="profile" class="page"><h2>Профиль</h2><div class="profile-card"><div class="steam-profile-head"><img id="profileSteamAvatar" src="logo.png" alt="Steam" class="profile-avatar"><div><h3 id="profileSteamName">Загрузка Steam...</h3><p id="profileSteamId" class="muted">Проверяем подключение</p><p id="userid" class="muted"></p></div></div><button class="secondary full" onclick="go('sell')">Мой Steam и продажа</button></div><div class="profile-stats"><div class="item"><p class="muted">Баланс бота</p><p id="botBalance" class="trade-price">—</p></div><div class="item"><p class="muted">Ожидают выплаты</p><p id="profilePending" class="trade-price">—</p></div></div><div class="item"><h3>Мои продажи</h3><p class="muted">Срок выплаты появляется после подтверждения получения скинов администратором.</p><button class="secondary full" onclick="loadProfile()">Обновить продажи</button><div id="profileSales">Загружаем...</div></div><div class="item"><h3>История выплат</h3><div id="profilePaid">Загружаем...</div></div><div class="item"><h3>Мои покупки</h3><button class="secondary full" onclick="loadMyOrders()">Обновить покупки</button><div id="myOrders">Загружаем...</div></div><button id="adminOpen" class="btn full" style="display:none" onclick="go('admin')">Админ-панель</button></section>
 <section id="admin" class="page"><h2>Управление магазином</h2><div class="admin-menu"><button class="admin-menu-btn active" data-admin-tab="requests" onclick="adminTab('requests')"><strong>Заявки на выкуп</strong><small>Просмотр и оценка предложений</small></button><button class="admin-menu-btn" data-admin-tab="payouts" onclick="adminTab('payouts')"><strong>Ожидающие выплаты</strong><small>Подтверждённые трейды и 7 суток</small></button><button class="admin-menu-btn" data-admin-tab="usdt" onclick="adminTab('usdt')"><strong>Оплата USDT</strong><small>Курс, кошельки и заказы</small></button><button class="admin-menu-btn" data-admin-tab="products"  onclick="adminTab('products')"><strong>Выставить скин</strong><small>Добавление и управление товарами</small></button></div><div id="adminTabRequests" class="admin-tab"><div class="admin-box"><h3>Заявки на выкуп</h3><button class="secondary full" onclick="loadAdminBuyouts()">Обновить заявки</button><div id="adminBuyouts"></div></div></div><div id="adminTabPayouts" class="admin-tab" style="display:none"><div class="admin-box"><h3>Статистика выплат</h3><button class="secondary full" onclick="loadAdminPayouts()">Обновить выплаты</button><div id="payoutStats"></div><div id="payoutList"></div></div></div><div id="adminTabUsdt" class="admin-tab" style="display:none"><div class="admin-box"><h3>Настройки USDT</h3><label>Курс ₽ за 1 USDT</label><input id="usdtRate" type="number" step=".01" min=".01"><label>Адрес TRC20</label><input id="usdtTrc"><label>Адрес BEP20</label><input id="usdtBep"><button class="btn full" onclick="saveUsdtSettings()">Сохранить</button><p id="usdtSettingsStatus" class="muted"></p></div><div class="admin-box"><h3>Заказы USDT</h3><button class="secondary full" onclick="loadUsdtOrders()">Обновить</button><div id="usdtOrders"></div></div></div><div id="adminTabProducts"  class="admin-tab" style="display:none"><div class="admin-box"><h3>Добавить скин в каталог</h3><label>Оружие</label><select id="adminWeapon"></select><label>Название скина</label><input id="adminSkin" placeholder="Например: Redline"><label>Состояние</label><select id="adminCondition"><option>Factory New</option><option>Minimal Wear</option><option>Field-Tested</option><option>Well-Worn</option><option>Battle-Scarred</option><option>Not Painted</option></select><label>Цена, ₽</label><input id="adminPrice" type="number" min="1" placeholder="1000"><label>Количество</label><input id="adminQuantity" type="number" min="0" value="1"><label>Фотография</label><input id="adminPhoto" type="file" accept="image/png,image/jpeg,image/webp"><img id="photoPreview" style="display:none;width:100%;max-height:220px;object-fit:contain" alt="Предпросмотр"><button id="addProductButton" class="btn full" onclick="addProduct()">Добавить товар</button><p id="adminStatus" class="muted"></p></div><div class="admin-box"><h3>Товары магазина</h3><div id="adminProducts"></div></div></div></section>
 </main><div id="paymentOverlay" class="pay-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="paymentTitle" onclick="if(event.target===this)closePayment()"><div class="pay-sheet">
 <div class="pay-header"><h2 id="paymentTitle">Способ оплаты</h2><button class="pay-close" onclick="closePayment()" aria-label="Закрыть">×</button></div>
@@ -93,7 +93,7 @@ button:disabled{opacity:.5}
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}const $=id=>document.getElementById(id),money=n=>Number(n||0).toLocaleString('ru-RU')+' ₽';let categories={},listings=[],cart=[],cartSelected=[],isAdmin=false,selectedCategory='all',selectedWeapon='all',selectedAssets=new Set(),inventoryItems=[],rulesVersion='',steamConnected=false,inventoryLoading=false,sellSession=0;
 async function api(url,options={}){const headers={'X-Telegram-Init-Data':tg?.initData||'',...(options.headers||{})};if(options.body&&!headers['Content-Type'])headers['Content-Type']='application/json';const response=await fetch(url,{...options,headers,cache:'no-store'});let data;try{data=await response.json()}catch{data={}}if(!response.ok)throw Error(data.error||'Ошибка сервера: '+response.status);return data}
-function go(id){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));window.scrollTo(0,0);if(id==='sell')openSell();if(id==='cart')renderCart();if(id==='catalog')renderProducts();if(id==='admin'&&isAdmin){loadAdminBuyouts();loadAdminPayouts()}if(id==='profile')loadProfile()}
+function go(id){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));window.scrollTo(0,0);if(id==='sell')openSell();if(id==='cart')renderCart();if(id==='catalog')renderProducts();if(id==='admin'&&isAdmin){loadAdminBuyouts();loadAdminPayouts()}if(id==='profile'){loadProfile();loadMyOrders()}}
 function makeButton(label,action,cls='secondary'){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=action;return b}
 function makeProductCard(p){const card=document.createElement('div');card.className='card';const image=document.createElement('div');image.className='weapon';if(p.image_url){const img=document.createElement('img');img.src=p.image_url;img.alt=p.skin;image.appendChild(img)}else image.textContent='CS2';const body=document.createElement('div');body.className='card-body';const name=document.createElement('h3');name.textContent=p.weapon+' | '+p.skin;const condition=document.createElement('small');condition.textContent=p.condition;const price=document.createElement('div');price.className='price';price.textContent=money(p.price);body.append(name,condition,price,makeButton('Подробнее',()=>showDetails(p.id),'secondary full'),makeButton('В корзину',()=>addCart(p.id),'btn full'));card.append(image,body);return card}
 function renderProducts(){const box=$('products');box.replaceChildren();const search=$('search').value.trim().toLowerCase();const filtered=listings.filter(p=>(p.weapon+' '+p.skin).toLowerCase().includes(search)&&(selectedCategory==='all'||p.category===selectedCategory)&&(selectedWeapon==='all'||p.weapon===selectedWeapon));filtered.forEach(p=>box.appendChild(makeProductCard(p)));if(!filtered.length)box.textContent='Скины не найдены'}
@@ -106,12 +106,12 @@ function addCart(id){
  const count=cart.filter(x=>String(x)===String(id)).length;
  if(count>=p.quantity)return alert('Нет нужного количества товара');
  cart.push(String(id));cartSelected.push(true);
- renderCart();
+ renderCart();saveCart();
  alert('Скин добавлен в корзину');
 }
-function toggleAllCart(checked){cartSelected=cart.map(()=>checked);renderCart()}
-function toggleCartItem(index,checked){cartSelected[index]=checked;renderCart()}
-function removeCartItem(index){cart.splice(index,1);cartSelected.splice(index,1);renderCart()}
+function toggleAllCart(checked){cartSelected=cart.map(()=>checked);renderCart();saveCart()}
+function toggleCartItem(index,checked){cartSelected[index]=checked;renderCart();saveCart()}
+function removeCartItem(index){cart.splice(index,1);cartSelected.splice(index,1);renderCart();saveCart()}
 function renderCart(){
  const box=$('cartItems');box.replaceChildren();
  let total=0,selected=0;
@@ -146,7 +146,7 @@ function checkout(){
  $('paymentAmount').textContent=money(amount);
  $('paymentOverlay').style.display='flex';
 }
-function closePayment(){$('paymentOverlay').style.display='none';$('usdtPayPanel').style.display='none';$('usdtInvoice').replaceChildren();$('usdtCreate').style.display='block'}
+function closePayment(){$('paymentOverlay').style.display='none';$('usdtPayPanel').style.display='none';$('usdtInvoice').replaceChildren();$('usdtCreate').style.display='block';$('usdtCreate').disabled=false}
 function choosePayment(method){
  if(method==='USDT'){$('usdtPayPanel').style.display='block';return}
  alert('Этот способ оплаты покупок пока не подключён. Деньги не списаны.');
@@ -154,6 +154,46 @@ function choosePayment(method){
 const usdtAmount=x=>(Number(x)/100).toFixed(2);
 async function copyUsdt(value){try{await navigator.clipboard.writeText(String(value));alert('Скопировано')}catch{alert('Не удалось скопировать автоматически. Удерживай текст для копирования.')}}
 let lastUsdtOrder=null;
+let cartSaveQueue=Promise.resolve();
+function saveCart(){
+ const items=cart.map((id,i)=>({id:String(id),selected:cartSelected[i]!==false}));
+ cartSaveQueue=cartSaveQueue.catch(()=>{}).then(()=>api('/api/cart',{
+   method:'PUT',body:JSON.stringify({items})
+ })).catch(e=>{console.error('Cart save failed:',e);alert('Корзина не сохранена: '+e.message)});
+ return cartSaveQueue;
+}
+async function restoreCart(){
+ try{
+   const data=await api('/api/cart');
+   cart=(data.items||[]).map(x=>String(x.id));
+   cartSelected=(data.items||[]).map(x=>x.selected!==false);
+   renderCart();
+ }catch(e){console.error('Cart load failed:',e);alert('Не удалось загрузить корзину: '+e.message)}
+}
+async function loadMyOrders(){
+ const box=$('myOrders');box.textContent='Загружаем покупки...';
+ try{
+  const orders=await api('/api/orders/my');box.replaceChildren();
+  if(!orders.length){box.textContent='Покупок пока нет';return}
+  const labels={awaiting:'Ожидает оплаты',review:'Проверяется администратором',paid:'Оплата подтверждена',rejected:'Оплата отклонена'};
+  for(const o of orders){
+   const item=el('div','item');
+   item.append(el('strong','','Заказ №'+o.id),el('p','muted',labels[o.status]||o.status),
+     el('p','',money(o.total_rub)+' · '+usdtAmount(o.amount_cents)+' USDT · '+o.network),
+     el('p','muted',(o.items||[]).map(x=>x.weapon+' | '+x.skin).join(', ')));
+   if(o.status==='awaiting'||o.status==='review')item.appendChild(makeButton('Открыть счёт',()=>{
+    lastUsdtOrder=o;checkoutOrder(o);
+   },'secondary full'));
+   box.appendChild(item);
+  }
+ }catch(e){box.textContent='Ошибка загрузки покупок: '+e.message}
+}
+function checkoutOrder(o){
+ $('paymentAmount').textContent=money(o.total_rub);
+ $('paymentOverlay').style.display='flex';$('usdtPayPanel').style.display='block';
+ $('usdtCreate').style.display='none';showUsdtOrder(o);
+}
+
 function showUsdtOrder(o){
  const box=$('usdtInvoice');box.replaceChildren();
  const w=el('div','usdt-box');
@@ -165,7 +205,7 @@ function showUsdtOrder(o){
  const btn=makeButton('Я оплатил',async()=>{
   if(!confirm('Подтвердить, что перевод действительно отправлен?'))return;
   btn.disabled=true;
-  try{await api('/api/orders/'+o.id+'/reported',{method:'POST'});o.status='review';btn.textContent='Ожидает проверки администратора'}catch(e){alert(e.message);btn.disabled=false}
+  try{await api('/api/orders/'+o.id+'/reported',{method:'POST'});o.status='review';btn.textContent='Ожидает проверки администратора';await loadMyOrders()}catch(e){alert(e.message);btn.disabled=false}
  },'btn full');
  if(o.status!=='awaiting'){btn.disabled=true;btn.textContent='Статус: '+o.status}
  w.appendChild(btn);box.appendChild(w);
@@ -254,5 +294,5 @@ function profileSaleCard(r){const div=el('div','sale-entry');div.appendChild(el(
 function drawProfileSales(){const sales=$('profileSales'),paid=$('profilePaid');sales.replaceChildren();paid.replaceChildren();const active=profileSalesCache.filter(r=>r.status!=='paid'),completed=profileSalesCache.filter(r=>r.status==='paid');for(const r of active)sales.appendChild(profileSaleCard(r));for(const r of completed)paid.appendChild(profileSaleCard(r));if(!active.length)sales.textContent='Продаж пока нет';if(!completed.length)paid.textContent='Завершённых выплат пока нет';const pending=profileSalesCache.filter(r=>r.status==='received').reduce((sum,r)=>sum+Number(r.offer_rub||0),0);$('profilePending').textContent=money(pending)}
 async function loadProfile(){await Promise.allSettled([checkSteam(),loadBalance()]);try{profileSalesCache=await api('/api/sell/requests');drawProfileSales()}catch(e){$('profileSales').textContent='Не удалось загрузить продажи: '+e.message;$('profilePaid').textContent='—';$('profilePending').textContent='—'}}
 setInterval(()=>{if(document.getElementById('profile').classList.contains('active')&&profileSalesCache.some(r=>r.status==='received'))drawProfileSales()},60000);
-async function init(){const u=tg?.initDataUnsafe?.user;if(u){$('userid').textContent='Telegram ID: '+u.id}try{categories=await api('/api/categories');renderFilters();fillAdminWeapons()}catch(e){console.error(e)}await checkAdmin();await loadProducts();const steamResult=new URLSearchParams(location.search).get('steam');if(steamResult){history.replaceState(null,'',location.pathname);go('sell');alert(steamResult==='success'?'Steam успешно привязан!':'Не удалось привязать Steam.')}}init();
+async function init(){const u=tg?.initDataUnsafe?.user;if(u){$('userid').textContent='Telegram ID: '+u.id}try{categories=await api('/api/categories');renderFilters();fillAdminWeapons()}catch(e){console.error(e)}await checkAdmin();await loadProducts();await restoreCart();const steamResult=new URLSearchParams(location.search).get('steam');if(steamResult){history.replaceState(null,'',location.pathname);go('sell');alert(steamResult==='success'?'Steam успешно привязан!':'Не удалось привязать Steam.')}}init();
 </script></body></html>
