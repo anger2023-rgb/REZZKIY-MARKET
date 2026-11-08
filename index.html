@@ -475,7 +475,37 @@ async function openSell(){const session=++sellSession;$('sellRules').style.displ
 function updateRulesButton(){$('rulesContinue').disabled=!$('rulesCheckbox').checked||!rulesVersion}
 async function acceptRules(){if(!$('rulesCheckbox').checked||!rulesVersion)return;const button=$('rulesContinue');button.disabled=true;try{await api('/api/sell/agree',{method:'POST',body:JSON.stringify({version:rulesVersion,accepted:true})});$('sellRules').style.display='none';$('sellWorkspace').style.display='block';if(await checkSteam())await loadInventory();else{$('inventoryStatus').textContent='Привяжи Steam, чтобы увидеть скины.'}await loadMyBuyouts()}catch(e){alert('Ошибка: '+e.message);button.disabled=false}}
 function renderInventory(){const grid=$('inventoryGrid');grid.replaceChildren();for(const item of inventoryItems){const card=document.createElement('div');card.className='card inventory-card'+(selectedAssets.has(item.assetid)?' selected':'');const img=document.createElement('img');img.src=item.icon||'logo.png';img.alt=item.name||'CS2';img.loading='lazy';const name=document.createElement('div');name.className='name';name.textContent=item.name;const tag=document.createElement('strong');tag.textContent=selectedAssets.has(item.assetid)?'✓ Выбрано':'Выбрать';card.append(img,name,tag);card.onclick=()=>{if(selectedAssets.has(item.assetid))selectedAssets.delete(item.assetid);else if(selectedAssets.size<30)selectedAssets.add(item.assetid);else return alert('Максимум 30 предметов');renderInventory()};grid.appendChild(card)}const b=$('sellSelected');b.disabled=selectedAssets.size===0;b.textContent='Предложить на выкуп ('+selectedAssets.size+')'}
-async function loadInventory(){if(inventoryLoading)return;inventoryLoading=true;$('inventoryLoading').style.display='flex';$('inventoryRetry').style.display='none';$('inventoryStatus').textContent='';try{const data=await api('/api/steam/inventory');inventoryItems=Array.isArray(data.items)?data.items:[];selectedAssets.clear();renderInventory();$('inventoryStatus').textContent=inventoryItems.length?'Доступно предметов: '+inventoryItems.length+'. Нажми на скин для выбора.':'Доступных предметов не найдено.'}catch(e){$('inventoryStatus').textContent='Ошибка загрузки: '+e.message;$('inventoryRetry').style.display='block'}finally{inventoryLoading=false;$('inventoryLoading').style.display='none'}}
+let inventoryNextRequestAt=0;
+let inventoryCooldownTimer=null;
+function updateInventoryCooldown(){
+ const btn=$('inventoryRetry');if(!btn)return;
+ const seconds=Math.ceil(Math.max(0,inventoryNextRequestAt-Date.now())/1000);
+ if(seconds>0){btn.style.display='block';btn.disabled=true;btn.textContent='Повторить через '+seconds+' сек.';}
+ else{btn.disabled=false;btn.textContent='Повторить загрузку';if(inventoryCooldownTimer){clearInterval(inventoryCooldownTimer);inventoryCooldownTimer=null;}}
+}
+function setInventoryCooldown(ms){
+ inventoryNextRequestAt=Math.max(inventoryNextRequestAt,Date.now()+ms);
+ if(inventoryCooldownTimer)clearInterval(inventoryCooldownTimer);
+ updateInventoryCooldown();inventoryCooldownTimer=setInterval(updateInventoryCooldown,1000);
+}
+async function loadInventory(){
+ if(inventoryLoading)return;
+ if(Date.now()<inventoryNextRequestAt){$('inventoryStatus').textContent='Подожди перед следующим запросом к Steam.';updateInventoryCooldown();return;}
+ inventoryLoading=true;
+ setInventoryCooldown(20000);
+ $('inventoryLoading').style.display='flex';$('inventoryRetry').style.display='none';$('inventoryStatus').textContent='';
+ try{
+  const data=await api('/api/steam/inventory');
+  inventoryItems=Array.isArray(data.items)?data.items:[];selectedAssets.clear();renderInventory();
+  $('inventoryStatus').textContent=inventoryItems.length?'Доступно предметов: '+inventoryItems.length+'. Нажми на скин для выбора.':'Доступных предметов не найдено.';
+ }catch(e){
+  const msg=String(e.message||e);
+  const limited=/429|rate.limit|too many|ограничил|подожди|15 секунд|temporar|throttl/i.test(msg);
+  if(limited)setInventoryCooldown(90000);
+  $('inventoryStatus').textContent='Ошибка загрузки: '+msg+(limited?' Повторите попытку после ожидания.':'');
+  $('inventoryRetry').style.display='block';updateInventoryCooldown();
+ }finally{inventoryLoading=false;$('inventoryLoading').style.display='none'}
+}
 async function submitBuyout(){if(!selectedAssets.size||!confirm('Отправить '+selectedAssets.size+' предметов на оценку?'))return;try{await api('/api/sell/requests',{method:'POST',body:JSON.stringify({assetids:[...selectedAssets]})});selectedAssets.clear();renderInventory();await loadMyBuyouts();alert('Заявка отправлена!')}catch(e){alert('Ошибка заявки: '+e.message)}}
 const statusNames={pending:'Ожидает оценки',quoted:'Цена предложена',accepted:'Цена принята — укажите реквизиты',declined:'Отклонено администратором',received:'Скины получены — ожидание выплаты',paid:'Выплата завершена'};
 function formatDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('ru-RU')}
