@@ -665,6 +665,29 @@ app.put('/api/admin/supplier-markup',admin,async(q,r)=>{
   }catch(e){await client.query('ROLLBACK');console.error('Save supplier markup:',e);bad(r,500,'Не удалось сохранить наценку')}
   finally{client.release()}
 });
+// Bulk publication is scoped to one exact weapon across all supplier pages.
+app.get('/api/admin/supplier-product-groups',admin,async(_q,r)=>{
+  try{
+    const x=await pool.query(`SELECT weapon,category,COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE supplier_published=TRUE)::int AS published
+      FROM products WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
+        AND quantity>0 AND supplier_cost_usd_cents>0 AND supplier_market_hash_name IS NOT NULL
+      GROUP BY weapon,category ORDER BY category,weapon`);
+    r.set('Cache-Control','no-store');r.json({groups:x.rows});
+  }catch(e){console.error('Supplier groups:',e);bad(r,500,'Не удалось загрузить группы скинов')}
+});
+app.patch('/api/admin/supplier-product-groups/publish',admin,async(q,r)=>{
+  const weapon=q.body?.weapon;
+  if(typeof weapon!=='string'||!weapon.trim()||weapon.length>120)return bad(r,400,'Выбери вид оружия');
+  try{
+    const x=await pool.query(`UPDATE products SET supplier_published=TRUE
+      WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2' AND weapon=$1
+        AND quantity>0 AND supplier_cost_usd_cents>0 AND supplier_market_hash_name IS NOT NULL
+        AND supplier_published IS DISTINCT FROM TRUE`,[weapon]);
+    r.json({weapon,published:x.rowCount});
+  }catch(e){console.error('Bulk supplier publish:',e);bad(r,500,'Не удалось выставить группу скинов')}
+});
+
 app.patch('/api/admin/supplier-products/:id/publish',admin,async(q,r)=>{
   const published=q.body?.published;
   if(!validId(q.params.id)||typeof published!=='boolean')return bad(r,400,'Неверные данные публикации');
