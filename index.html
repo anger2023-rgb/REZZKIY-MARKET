@@ -387,6 +387,21 @@ body>header,body>main,body>nav{position:relative;z-index:1}body>header{z-index:1
 #popular .card .card-body, #products .card .card-body {
   border-top:1px solid #262329;
 }
+
+/* REZZKIY MARKET: Telegram channel promotion */
+.rm-channel{position:relative;isolation:isolate;overflow:hidden;margin:-8px 0 23px;padding:14px;border:1px solid #49372a;border-radius:17px;background:linear-gradient(125deg,#1d1c20 0%,#101014 62%,#1c140e 100%);box-shadow:0 10px 28px #0007}
+.rm-channel:before{content:"";position:absolute;inset:0;pointer-events:none;z-index:-1;background:radial-gradient(circle at 92% 18%,#ff790014,transparent 52%)}
+.rm-channel-top{display:flex;align-items:center;gap:12px;min-width:0}
+.rm-channel-avatar{width:56px;height:56px;border-radius:50%;flex:0 0 56px;overflow:hidden;border:2px solid #bb5a19;background:linear-gradient(135deg,#302014,#0c0c0e);display:grid;place-items:center;box-shadow:0 0 18px #ff790018}
+.rm-channel-avatar img{display:block;width:100%;height:100%;object-fit:cover}
+.rm-channel-fallback{color:#ff8d2d;font-size:25px;font-weight:900;letter-spacing:-2px}
+.rm-channel-copy{min-width:0;flex:1}
+.rm-channel-name{color:#fff;font-size:15px;font-weight:850;line-height:1.25}
+.rm-channel-handle{color:#b5b1b1;font-size:12px;margin-top:4px}
+.rm-channel-subtitle{color:#ffab65;font-size:11px;margin-top:5px}
+.rm-channel-cta{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:13px;min-height:42px;border-radius:11px;background:linear-gradient(110deg,#ff9a2b,#ff7900 60%,#dc5b00);color:#14100b!important;font-weight:850;font-size:14px;text-decoration:none;box-shadow:0 4px 14px #ff790020}
+.rm-channel-cta:active{transform:scale(.99)}
+@media(max-width:360px){.rm-channel{padding:12px}.rm-channel-name{font-size:14px}.rm-channel-avatar{width:49px;height:49px;flex-basis:49px}}
 </style><style>
 .featured-admin-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:9px}
 .featured-admin-actions button{font-size:12px!important;min-height:34px!important;padding:7px 9px!important;flex:1 1 auto}
@@ -403,6 +418,13 @@ body>header,body>main,body>nav{position:relative;z-index:1}body>header{z-index:1
 <button onclick="go('profile')"><span class="quick-icon" data-icon="layers"></span><strong>Профиль</strong></button>
 <button onclick="go('cart')"><span class="quick-icon" data-icon="bag"></span><strong>Корзина</strong></button>
 </div>
+<aside class="rm-channel" aria-label="Telegram-канал REZZKIY MARKET">
+  <div class="rm-channel-top">
+    <div class="rm-channel-avatar"><img src="https://t.me/i/userpic/320/rezzkiy_market.jpg" alt="Аватар Telegram-канала" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='block'"><span class="rm-channel-fallback" style="display:none" aria-hidden="true">R</span></div>
+    <div class="rm-channel-copy"><div class="rm-channel-name">REZZKIY MARKET</div><div class="rm-channel-handle">@rezzkiy_market · Telegram-канал</div><div class="rm-channel-subtitle">Новости · Новые скины · Акции</div></div>
+  </div>
+  <a class="rm-channel-cta" href="https://t.me/rezzkiy_market" target="_blank" rel="noopener noreferrer" onclick="if(window.Telegram?.WebApp?.openTelegramLink){event.preventDefault();window.Telegram.WebApp.openTelegramLink(this.href)}">Подписаться на канал ↗</a>
+</aside>
 <div class="heading premium-heading"><h2>Популярные скины</h2><button class="outline" onclick="go('catalog')">Смотреть все →</button></div>
 <div id="popular" class="grid"></div></section>
 <section id="catalog" class="page"><h2>Каталог скинов</h2><input id="search" placeholder="Поиск скинов..." oninput="renderProducts()"><div id="groupChips" class="chips"></div><div id="weaponChips" class="chips"></div><div id="products" class="grid"></div></section>
