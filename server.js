@@ -274,6 +274,21 @@ async function initDb(){
     )
   `);
 
+  // Stage 1: source metadata. Existing listings remain OWN.
+  await pool.query(`
+    ALTER TABLE products
+      ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'OWN',
+      ADD COLUMN IF NOT EXISTS supplier_code TEXT,
+      ADD COLUMN IF NOT EXISTS supplier_listing_id TEXT,
+      ADD COLUMN IF NOT EXISTS steam_asset_id TEXT,
+      ADD COLUMN IF NOT EXISTS delivery_ready BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS products_supplier_listing_unique
+    ON products(supplier_code,supplier_listing_id)
+    WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS product_images(
       id UUID PRIMARY KEY,
@@ -489,7 +504,10 @@ app.get('/api/categories',(_q,r)=>{
 app.get('/api/products',async(_q,r)=>{
   try{
     const result=await pool.query(
-      'SELECT * FROM products ORDER BY created_at DESC,id DESC'
+      `SELECT id,weapon,skin,category,condition,price,quantity,image_url,
+              source_type,delivery_ready,created_at
+       FROM products WHERE source_type='OWN'
+       ORDER BY created_at DESC,id DESC`
     );
 
     r.json(result.rows);
@@ -2078,9 +2096,9 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1::bigint)',[q.telegramUser.id]);
     const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity FROM products
+      `SELECT id,weapon,skin,condition,price,quantity,source_type FROM products
        WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`,[ids]);
-    if(products.rowCount!==ids.length||products.rows.some(p=>p.quantity<1)){
+    if(products.rowCount!==ids.length||products.rows.some(p=>p.quantity<1||p.source_type!=='OWN')){
       await client.query('ROLLBACK');
       return bad(r,409,'Некоторые скины закончились или недоступны');
     }
@@ -2166,7 +2184,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
     }
 
     const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity
+      `SELECT id,weapon,skin,condition,price,quantity,source_type
        FROM products
        WHERE id=ANY($1::bigint[])
        FOR UPDATE`,
@@ -2178,7 +2196,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       return bad(r,409,'Некоторые товары уже недоступны');
     }
 
-    if(products.rows.some(p=>p.quantity<1)){
+    if(products.rows.some(p=>p.quantity<1||p.source_type!=='OWN')){
       await client.query('ROLLBACK');
       return bad(r,409,'Один из товаров закончился');
     }
