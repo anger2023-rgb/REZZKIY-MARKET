@@ -2737,6 +2737,11 @@ app.get('/api/orders/my',user,async(q,r)=>{
   Запуск Telegram Mini App.
 */
 
+app.get('/rules',(_q,r)=>{
+  r.set('Cache-Control','public, max-age=300');
+  r.sendFile(path.join(DIR,'rules.html'));
+});
+
 app.use(express.static(DIR));
 
 app.get('/',(_q,r)=>{
