@@ -409,6 +409,26 @@ async function initDb(){
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS balance_purchases(
+      order_id BIGINT PRIMARY KEY REFERENCES usdt_orders(id),
+      telegram_id BIGINT NOT NULL,
+      amount_rub INTEGER NOT NULL CHECK(amount_rub>0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(
+    `ALTER TABLE usdt_orders
+     DROP CONSTRAINT IF EXISTS usdt_orders_network_check`
+  );
+
+  await pool.query(`
+    ALTER TABLE usdt_orders
+    ADD CONSTRAINT usdt_orders_network_check
+    CHECK(network IN ('TRC20','BEP20','BALANCE'))
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS market_users(
       telegram_id BIGINT PRIMARY KEY,
       username TEXT,
@@ -896,7 +916,6 @@ async function fetchInventory(id){
     });
 
     if(!resp.ok){
-
       const e=Error(
         resp.status===429
           ?'Steam ограничил запросы'
@@ -1647,6 +1666,11 @@ app.get('/api/admin/users',admin,async(q,r)=>{
             FROM admin_balance_credits
             WHERE telegram_id=u.telegram_id
           ),0)
+          - COALESCE((
+            SELECT SUM(amount_rub)
+            FROM balance_purchases
+            WHERE telegram_id=u.telegram_id
+          ),0)
         )::bigint AS balance_rub,
         (
           SELECT COUNT(*)
@@ -1694,6 +1718,11 @@ app.get('/api/admin/users/:id',admin,async(q,r)=>{
              COALESCE((
                SELECT SUM(amount_rub)
                FROM admin_balance_credits
+               WHERE telegram_id=u.telegram_id
+             ),0)
+             - COALESCE((
+               SELECT SUM(amount_rub)
+               FROM balance_purchases
                WHERE telegram_id=u.telegram_id
              ),0)
            )::bigint AS balance_rub
@@ -1807,6 +1836,9 @@ app.get('/api/balance',user,async(q,r)=>{
          UNION ALL
          SELECT telegram_id,amount_rub
          FROM admin_balance_credits
+         UNION ALL
+         SELECT telegram_id,-amount_rub
+         FROM balance_purchases
        ) ledger
        WHERE telegram_id=$1`,
       [q.telegramUser.id]
@@ -2031,6 +2063,62 @@ app.put('/api/admin/payment-settings',admin,async(q,r)=>{
     console.error('Save USDT settings:',e);
     bad(r,500,'Ошибка сохранения настроек');
   }
+});
+
+/* Atomic balance checkout: authenticated user, locked products and per-user ledger. */
+app.post('/api/orders/balance',user,async(q,r)=>{
+  const ids=q.body?.productIds;
+  if(!Array.isArray(ids)||ids.length<1||ids.length>50||
+     ids.some(id=>!validId(id))||new Set(ids.map(String)).size!==ids.length){
+    return bad(r,400,'Проверь выбранные товары');
+  }
+  let client;
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1::bigint)',[q.telegramUser.id]);
+    const products=await client.query(
+      `SELECT id,weapon,skin,condition,price,quantity FROM products
+       WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`,[ids]);
+    if(products.rowCount!==ids.length||products.rows.some(p=>p.quantity<1)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Некоторые скины закончились или недоступны');
+    }
+    const items=ids.map(id=>{
+      const p=products.rows.find(x=>String(x.id)===String(id));
+      return {product_id:p.id,weapon:p.weapon,skin:p.skin,condition:p.condition,price:p.price,quantity:1};
+    });
+    const total=items.reduce((sum,p)=>sum+Number(p.price),0);
+    if(!Number.isSafeInteger(total)||total<1||total>2147483647){
+      await client.query('ROLLBACK');return bad(r,400,'Неверная сумма');
+    }
+    const b=await client.query(`SELECT
+      COALESCE((SELECT SUM(amount_rub) FROM balance_ledger WHERE telegram_id=$1),0)
+      +COALESCE((SELECT SUM(amount_rub) FROM admin_balance_credits WHERE telegram_id=$1),0)
+      -COALESCE((SELECT SUM(amount_rub) FROM balance_purchases WHERE telegram_id=$1),0)
+      AS balance`,[q.telegramUser.id]);
+    const balance=Number(b.rows[0].balance);
+    if(balance<total){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Недостаточно средств. Баланс: '+balance+' ₽, к оплате: '+total+' ₽');
+    }
+    const order=await client.query(`INSERT INTO usdt_orders
+      (telegram_id,items,total_rub,rate_kopecks,amount_cents,network,wallet_address,status,reviewed_at)
+      VALUES($1,$2::jsonb,$3,10000,$4,'BALANCE','','paid',NOW())
+      RETURNING id,items,total_rub,status,network,created_at`,
+      [q.telegramUser.id,JSON.stringify(items),total,total*100]);
+    await client.query(`INSERT INTO balance_purchases(order_id,telegram_id,amount_rub)
+      VALUES($1,$2,$3)`,[order.rows[0].id,q.telegramUser.id,total]);
+    for(const id of ids){
+      await client.query('UPDATE products SET quantity=quantity-1 WHERE id=$1',[id]);
+    }
+    await client.query('COMMIT');
+    r.status(201).json({...order.rows[0],balanceRub:balance-total});
+  }catch(e){
+    if(client)try{await client.query('ROLLBACK')}catch{}
+    console.error('Balance checkout:',e);
+    bad(r,500,'Ошибка оплаты с баланса. Проверь историю заказов перед повторной попыткой');
+  }finally{if(client)client.release()}
 });
 
 /* USDT invoice and order routes */
