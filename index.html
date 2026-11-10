@@ -247,7 +247,7 @@ nav .nav-icon svg{width:23px!important;height:23px!important}
 html,body{background:#050505!important}
 #rm-waves-canvas{position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;display:block!important;pointer-events:none!important;z-index:0!important;background:#050505}
 #rm-waves-veil{position:fixed;inset:0;pointer-events:none;z-index:0;background:linear-gradient(180deg,rgba(0,0,0,.16),rgba(0,0,0,.12) 38%,rgba(0,0,0,.25))}
-body>header,body>main,body>nav{position:relative;z-index:1}body>header{z-index:12}body>nav{z-index:15}
+body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>nav{position:fixed!important;left:0!important;right:0!important;bottom:0!important;z-index:150!important;width:100%;transform:none!important}body>main{padding-bottom:calc(135px + env(safe-area-inset-bottom,0px))!important}
 @media(prefers-reduced-motion:reduce){#rm-waves-canvas{background:linear-gradient(135deg,#050505,#17191d 55%,#050505)}}
 
 /* Small drifting amber embers above black waves, below all shop controls. */
