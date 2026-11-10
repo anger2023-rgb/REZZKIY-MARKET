@@ -217,7 +217,7 @@ nav .nav-icon svg{width:26px;height:26px;stroke:currentColor;stroke-width:2;fill
 <button class="pay-choice" onclick="choosePayment('BALANCE')"><span class="pay-choice-icon">◉</span><span><strong>С баланса бота</strong><small>Использовать внутренний баланс</small></span></button>
 <button class="pay-choice" onclick="choosePayment('RUB')"><span class="pay-choice-icon">₽</span><span><strong>В рублях</strong><small>Оплата в RUB</small></span></button>
 <button class="pay-choice" onclick="choosePayment('USDT')"><span class="pay-choice-icon">₮</span><span><strong>В USDT</strong><small>Оплата криптовалютой</small></span></button>
-<div id="usdtPayPanel" class="usdt-box" style="display:none"><h3>Оплата USDT</h3><label>Сеть</label><select id="usdtNetwork"><option value="TRC20">TRC20</option><option value="BEP20">BEP20</option></select><button id="usdtCreate" class="btn full" onclick="createUsdtOrder()">Создать счёт</button><div id="usdtInvoice"></div><p id="usdtError" class="payment-error"></p></div><p class="pay-note">USDT — ручная проверка администратором. Оплата RUB и с баланса пока не подключена.</p>
+<div id="usdtPayPanel" class="usdt-box" style="display:none"><h3>Оплата USDT</h3><label>Сеть</label><select id="usdtNetwork"><option value="TRC20">TRC20</option><option value="BEP20">BEP20</option></select><button id="usdtCreate" class="btn full" onclick="createUsdtOrder()">Создать счёт</button><div id="usdtInvoice"></div><p id="usdtError" class="payment-error"></p></div><p class="pay-note">Оплата с баланса проходит сразу. USDT проверяется администратором вручную. Оплата в рублях пока не подключена.</p>
 </div></div><nav><button data-page="home" class="active" onclick="go('home')"><span class="nav-icon" data-icon="home"></span>Главная</button><button data-page="catalog" onclick="go('catalog')"><span class="nav-icon" data-icon="grid"></span>Каталог</button><button data-page="sell" onclick="go('sell')"><span class="nav-icon" data-icon="swap"></span>Продать</button><button data-page="cart" onclick="go('cart')"><span class="nav-icon" data-icon="cart"></span>Корзина</button><button data-page="profile" onclick="go('profile')"><span class="nav-icon" data-icon="user"></span>Профиль</button></nav>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}const $=id=>document.getElementById(id),money=n=>Number(n||0).toLocaleString('ru-RU')+' ₽';let categories={},listings=[],cart=[],cartSelected=[],isAdmin=false,selectedCategory='all',selectedWeapon='all',selectedAssets=new Set(),inventoryItems=[],rulesVersion='',steamConnected=false,inventoryLoading=false,sellSession=0;
@@ -290,7 +290,36 @@ function checkout(){
 function closePayment(){$('paymentOverlay').style.display='none';$('usdtPayPanel').style.display='none';$('usdtInvoice').replaceChildren();$('usdtCreate').style.display='block';$('usdtCreate').disabled=false}
 function choosePayment(method){
  if(method==='USDT'){$('usdtPayPanel').style.display='block';return}
- alert('Этот способ оплаты покупок пока не подключён. Деньги не списаны.');
+ if(method==='BALANCE'){payWithBalance();return}
+ alert('Оплата в рублях пока не подключена. Деньги не списаны.');
+}
+let balancePaymentBusy=false;
+async function payWithBalance(){
+ if(balancePaymentBusy)return;
+ const ids=cart.filter((id,i)=>cartSelected[i]!==false).map(Number);
+ if(!ids.length)return alert('Выбери товары');
+ if(new Set(ids).size!==ids.length)return alert('В корзине есть повторяющиеся позиции. Выбери разные товары.');
+ balancePaymentBusy=true;
+ const button=document.querySelector('.pay-choice[onclick="choosePayment(\'BALANCE\')"]');
+ if(button)button.disabled=true;
+ try{
+   const balance=await api('/api/balance');
+   const total=ids.reduce((sum,id)=>sum+Number(listings.find(p=>String(p.id)===String(id))?.price||0),0);
+   if(Number(balance.balanceRub)<total){alert('Недостаточно средств');return}
+   if(!confirm('Оплатить '+money(total)+' с баланса бота?'))return;
+   const order=await api('/api/orders/balance',{method:'POST',body:JSON.stringify({productIds:ids})});
+   const purchased=ids.map(String);
+   cart=cart.filter(id=>!purchased.includes(String(id)));
+   cartSelected=cart.map(()=>true);
+   try{await saveCart()}catch(e){console.warn('Cart sync:',e)}
+   renderCart();closePayment();
+   await loadBalance();
+   try{localStorage.setItem('rezz_paid_cart_cleared_'+String(tg?.initDataUnsafe?.user?.id||'unknown')+'_'+String(order.id),'1')}catch{}
+   alert('Оплата прошла успешно! Списано '+money(total)+'.');
+   await loadMyOrders();
+   go('profile');openProfileSection('purchases');
+ }catch(e){alert(e.message)}
+ finally{balancePaymentBusy=false;if(button)button.disabled=false}
 }
 const usdtAmount=x=>(Number(x)/100).toFixed(2);
 async function copyUsdt(value){try{await navigator.clipboard.writeText(String(value));alert('Скопировано')}catch{alert('Не удалось скопировать автоматически. Удерживай текст для копирования.')}}
@@ -382,7 +411,7 @@ async function loadMyOrders(){
   for(const o of orders){
    const item=el('div','item');
    item.append(el('strong','','Заказ №'+o.id),el('p','muted',labels[o.status]||o.status),
-     el('p','',money(o.total_rub)+' · '+usdtAmount(o.amount_cents)+' USDT · '+o.network),
+     el('p','',money(o.total_rub)+(o.network==='BALANCE'?' · Оплачено с баланса':' · '+usdtAmount(o.amount_cents)+' USDT · '+o.network)),
      el('p','muted',(o.items||[]).map(x=>x.weapon+' | '+x.skin).join(', ')));
    if(o.status==='awaiting'||o.status==='review')item.appendChild(makeButton('Открыть счёт',()=>{
     lastUsdtOrder=o;checkoutOrder(o);
