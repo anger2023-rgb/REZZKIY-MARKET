@@ -598,6 +598,38 @@ app.get('/api/admin/suppliers',admin,(_q,r)=>{
     message:'API поставщика не подключён. Товары поставщика сохраняются как черновики и недоступны покупателям.'});
 });
 
+// BuyCS2 read-only connection test. No orders, transfers or catalog mutations.
+app.get('/api/admin/buycs2/test',admin,async(_req,res)=>{
+  res.set('Cache-Control','no-store');
+  const merchantId=process.env.BUYCS2_MERCHANT_ID?.trim();
+  const apiKey=process.env.BUYCS2_API_KEY?.trim();
+  if(!merchantId||!apiKey){
+    return res.status(503).json({connected:false,message:'Не настроены BUYCS2_MERCHANT_ID или BUYCS2_API_KEY в Railway'});
+  }
+  try{
+    const response=await fetch('https://api.buycs2.com/Wallet/GetBalance',{
+      method:'GET',
+      headers:{'x-merchant-id':merchantId,'x-api-key':apiKey,'Accept':'application/json','Accept-Encoding':'gzip'},
+      signal:AbortSignal.timeout(10000)
+    });
+    if(!response.ok){
+      const messages={401:'Ключ или Merchant ID неверны либо аккаунт неактивен',403:'IP Railway не разрешён поставщиком',404:'Поставщик не распознал запрос или авторизацию',429:'Лимит запросов BuyCS2 превышен'};
+      return res.status(502).json({connected:false,message:messages[response.status]||`BuyCS2 вернул HTTP ${response.status}`});
+    }
+    const payload=await response.json();
+    if(!payload||typeof payload!=='object'||!Number.isFinite(payload.total_available)){
+      return res.status(502).json({connected:false,message:'Неожиданный формат ответа BuyCS2'});
+    }
+    // Do not return wallet addresses, API credentials or full upstream response.
+    return res.json({connected:true,message:'BuyCS2 подключён. Авторизация подтверждена.',
+      availableUsd:(payload.total_available/100).toFixed(2),
+      currency:'USD',autoImport:false,checkoutEnabled:false});
+  }catch(e){
+    console.error('BuyCS2 connection test:',e?.name||'Error');
+    return res.status(502).json({connected:false,message:'Не удалось связаться с BuyCS2. Проверь доступность API и сеть Railway.'});
+  }
+});
+
 app.get('/api/admin/me',admin,(q,r)=>{
   r.json({admin:true,id:q.admin.id});
 });
