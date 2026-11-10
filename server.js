@@ -289,6 +289,17 @@ async function initDb(){
     WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
   `);
 
+  // Supplier markup: base_cost_rub is immutable wholesale baseline, never the marked-up price.
+  await pool.query(`ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS base_cost_rub INTEGER,
+    ADD COLUMN IF NOT EXISTS markup_override NUMERIC(6,2)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS supplier_pricing_settings(
+    id INTEGER PRIMARY KEY CHECK(id=1), default_markup NUMERIC(6,2) NOT NULL DEFAULT 5
+  )`);
+  await pool.query(`INSERT INTO supplier_pricing_settings(id,default_markup) VALUES(1,5) ON CONFLICT(id) DO NOTHING`);
+  // Existing manual supplier drafts: current price is taken as baseline (not a verified BuyCS2 cost).
+  await pool.query(`UPDATE products SET base_cost_rub=price WHERE source_type='SUPPLIER' AND base_cost_rub IS NULL`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS product_images(
       id UUID PRIMARY KEY,
@@ -586,10 +597,40 @@ app.put('/api/admin/featured',admin,async(q,r)=>{
 app.get('/api/admin/supplier-products',admin,async(_q,r)=>{
   try{
     const x=await pool.query(`SELECT id,weapon,skin,condition,price,quantity,image_url,
-      source_type,supplier_code,supplier_listing_id,delivery_ready,created_at
+      source_type,supplier_code,supplier_listing_id,delivery_ready,created_at,base_cost_rub,markup_override
       FROM products WHERE source_type='SUPPLIER' ORDER BY created_at DESC,id DESC`);
     r.set('Cache-Control','no-store');r.json(x.rows);
   }catch(e){console.error('Supplier drafts:',e);bad(r,500,'Ошибка черновиков поставщика')}
+});
+
+// Admin-only supplier pricing. Changes affect supplier drafts only, never OWN stock.
+const validMarkup=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=500&&Math.round(v*100)===v*100;
+app.get('/api/admin/supplier-markup',admin,async(_q,r)=>{
+  try{const x=await pool.query('SELECT default_markup FROM supplier_pricing_settings WHERE id=1');
+    r.set('Cache-Control','no-store');r.json({defaultMarkup:Number(x.rows[0].default_markup)})
+  }catch(e){console.error('Read supplier markup:',e);bad(r,500,'Не удалось загрузить наценку')}
+});
+app.put('/api/admin/supplier-markup',admin,async(q,r)=>{
+  const value=q.body?.markup;
+  if(!validMarkup(value))return bad(r,400,'Наценка должна быть от 0 до 500% с точностью 0,01%');
+  const client=await pool.connect();
+  try{await client.query('BEGIN');
+    await client.query('UPDATE supplier_pricing_settings SET default_markup=$1 WHERE id=1',[value]);
+    await client.query(`UPDATE products SET price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(base_cost_rub*(1+$1::numeric/100))))::integer
+      WHERE source_type='SUPPLIER' AND base_cost_rub IS NOT NULL AND markup_override IS NULL`,[value]);
+    await client.query('COMMIT');r.json({defaultMarkup:value});
+  }catch(e){await client.query('ROLLBACK');console.error('Save supplier markup:',e);bad(r,500,'Не удалось сохранить наценку')}
+  finally{client.release()}
+});
+app.patch('/api/admin/supplier-products/:id/markup',admin,async(q,r)=>{
+  const value=q.body?.markup;
+  if(!validId(q.params.id)||!(value===null||validMarkup(value)))return bad(r,400,'Неверная наценка');
+  try{const x=await pool.query(`UPDATE products SET markup_override=$2,
+    price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(base_cost_rub*(1+COALESCE($2::numeric,(SELECT default_markup FROM supplier_pricing_settings WHERE id=1))/100))))::integer
+    WHERE id=$1 AND source_type='SUPPLIER' AND base_cost_rub IS NOT NULL
+    RETURNING id,price,base_cost_rub,markup_override`,[q.params.id,value]);
+    if(!x.rowCount)return bad(r,404,'Черновик поставщика не найден');r.json(x.rows[0]);
+  }catch(e){console.error('Supplier markup:',e);bad(r,500,'Не удалось изменить наценку')}
 });
 
 app.get('/api/admin/suppliers',admin,(_q,r)=>{
@@ -779,6 +820,12 @@ app.post('/api/products',admin,async(q,r)=>{
       ]
     );
 
+    if(source_type==='SUPPLIER'){
+      const updated=await pool.query(`UPDATE products SET base_cost_rub=$2,
+        price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL($2::numeric*(1+(SELECT default_markup FROM supplier_pricing_settings WHERE id=1)/100))))::integer
+        WHERE id=$1 RETURNING *`,[x.rows[0].id,price]);
+      return r.status(201).json(updated.rows[0]);
+    }
     r.status(201).json(x.rows[0]);
   }catch{
     bad(r,500,'Ошибка добавления');
@@ -811,7 +858,9 @@ app.patch('/api/admin/products/:id/source',admin,async(q,r)=>{
   try{
     const x=await pool.query(`UPDATE products
       SET source_type=$2,delivery_ready=FALSE,
-          supplier_code=NULL,supplier_listing_id=NULL
+          supplier_code=NULL,supplier_listing_id=NULL,
+          base_cost_rub=CASE WHEN $2='SUPPLIER' THEN price ELSE NULL END,
+          markup_override=NULL
       WHERE id=$1 RETURNING id,source_type,delivery_ready`,[q.params.id,type]);
     if(!x.rowCount)return bad(r,404,'Товар не найден');
     r.json(x.rows[0]);
