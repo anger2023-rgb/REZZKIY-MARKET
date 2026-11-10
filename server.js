@@ -661,6 +661,25 @@ app.post('/api/products',admin,async(q,r)=>{
   }
 });
 
+// Admin-only readiness toggle for own inventory. Supplier items are not editable here.
+app.patch('/api/admin/products/:id/readiness',admin,async(q,r)=>{
+  if(!validId(q.params.id)||typeof q.body?.delivery_ready!=='boolean'){
+    return bad(r,400,'Неверные данные');
+  }
+  try{
+    const result=await pool.query(
+      `UPDATE products SET delivery_ready=$2
+       WHERE id=$1 AND source_type='OWN' RETURNING *`,
+      [q.params.id,q.body.delivery_ready]
+    );
+    if(!result.rowCount)return bad(r,404,'Собственный товар не найден');
+    r.json(result.rows[0]);
+  }catch(e){
+    console.error('Product readiness update:',e);
+    bad(r,500,'Не удалось изменить готовность');
+  }
+});
+
 app.delete('/api/products/:id',admin,async(q,r)=>{
   if(!validId(q.params.id)){
     return bad(r,400,'Неверный ID');
