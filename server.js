@@ -581,21 +581,10 @@ app.get('/api/products',async(_q,r)=>{
 // Public selection: only active own-stock listings are visible.
 app.get('/api/featured',async(_q,r)=>{
   try{
-    // Featured is a persistent admin-curated showcase. Do not silently drop a pin
-    // just because a supplier refresh temporarily reports zero stock/unpublished.
-    // The client receives availability separately and can show "Нет в наличии".
     const x=await pool.query(`
-      SELECT
-        p.id,p.weapon,p.skin,p.category,p.condition,p.price,p.quantity,p.image_url,
-        p.source_type,p.delivery_ready,p.supplier_published,p.created_at,
-        f.position,
-        CASE
-          WHEN p.source_type='OWN' THEN (p.quantity>0)
-          WHEN p.source_type='SUPPLIER' THEN (p.supplier_published=TRUE AND p.quantity>0)
-          ELSE FALSE
-        END AS available
-      FROM featured_products f
-      JOIN products p ON p.id=f.product_id
+      SELECT f.product_id AS id, f.position
+      FROM featured_products f JOIN products p ON p.id=f.product_id
+      WHERE p.source_type='OWN' AND p.quantity>0
       ORDER BY f.position
     `);
     r.set('Cache-Control','no-store');
@@ -617,7 +606,7 @@ app.put('/api/admin/featured',admin,async(q,r)=>{
     await client.query('SELECT pg_advisory_xact_lock(927301)');
     if(ids.length){
       const valid=await client.query(`SELECT id FROM products
-        WHERE id=ANY($1::bigint[]) AND (source_type='OWN' OR (source_type='SUPPLIER' AND supplier_published=TRUE)) AND quantity>0`,[ids.map(String)]);
+        WHERE id=ANY($1::bigint[]) AND source_type='OWN' AND quantity>0`,[ids.map(String)]);
       if(valid.rowCount!==ids.length){
         await client.query('ROLLBACK');
         return bad(r,409,'Один из товаров отсутствует или закончился');
