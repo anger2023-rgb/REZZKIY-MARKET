@@ -530,6 +530,7 @@ async function initDb(){
     ON CONFLICT DO NOTHING
   `);
   await pool.query(`INSERT INTO featured_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
+  await repairSupplierCategories();
   console.log('Database ready');
 }
 
@@ -699,10 +700,24 @@ const buycs2Name = (name) => {
   const full=String(name||'').trim();
   const match=full.match(/\s\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred|Not Painted)\)$/);
   const condition=match?.[1]||'Not Painted';
-  const bare=match?full.slice(0,-match[0].length):full;
+  const bare=(match?full.slice(0,-match[0].length):full).replace(/^★\s*/, '').replace(/^(?:StatTrak™|Souvenir)\s+/, '').trim();
   const pipe=bare.indexOf(' | ');
   return {weapon:pipe>=0?bare.slice(0,pipe):'Другое',skin:pipe>=0?bare.slice(pipe+3):bare,condition};
 };
+// Repair previously imported listings without changing publication or pricing.
+async function repairSupplierCategories(){
+  const result=await pool.query(`SELECT id,supplier_market_hash_name FROM products
+    WHERE supplier_code='BUYCS2' AND supplier_market_hash_name IS NOT NULL`);
+  for(let i=0;i<result.rows.length;i+=250){
+    const batch=result.rows.slice(i,i+250).map(row=>{
+      const name=buycs2Name(row.supplier_market_hash_name);
+      return {id:String(row.id),weapon:name.weapon.slice(0,120),category:categoryOf(name.weapon)||'OTHER'};
+    });
+    await pool.query(`UPDATE products p SET weapon=v.weapon,category=v.category
+      FROM jsonb_to_recordset($1::jsonb) AS v(id bigint,weapon text,category text)
+      WHERE p.id=v.id AND (p.weapon IS DISTINCT FROM v.weapon OR p.category IS DISTINCT FROM v.category)`,[JSON.stringify(batch)]);
+  }
+}
 app.get('/api/admin/buycs2/import-settings',admin,async(_q,r)=>{
   try{const x=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
     r.set('Cache-Control','no-store');r.json({usdRub:x.rows[0]?.usd_rub===null?null:Number(x.rows[0].usd_rub)});
@@ -749,7 +764,7 @@ async function runBuycs2Import(){
       if(!Number.isSafeInteger(cost)||cost<1||cost>100000000)continue;
       const name=buycs2Name(item.market_hash_name);
       const img=typeof item.img==='string'&&/^https:\/\//i.test(item.img)?item.img.slice(0,2048):'';
-      rows.push({listingId,assetId:item.assetId,market_hash_name:item.market_hash_name.trim(),weapon:name.weapon.slice(0,120),skin:name.skin.slice(0,240),condition:name.condition,
+      rows.push({listingId,assetId:item.assetId,market_hash_name:item.market_hash_name.trim(),weapon:name.weapon.slice(0,120),category:categoryOf(name.weapon)||'OTHER',skin:name.skin.slice(0,240),condition:name.condition,
         image_url:img,base_cost_rub:cost,usd_cents:item.price});
     }
     if(!rows.length)throw Error('В каталоге BuyCS2 не найдено подходящих товаров');
@@ -763,14 +778,14 @@ async function runBuycs2Import(){
         const batch=JSON.stringify(rows.slice(i,i+250));
         await client.query(`INSERT INTO products
           (weapon,skin,category,condition,price,quantity,image_url,source_type,delivery_ready,supplier_code,supplier_listing_id,steam_asset_id,base_cost_rub,supplier_cost_usd_cents,supplier_market_hash_name)
-          SELECT v.weapon,v.skin,'OTHER',v.condition,
+          SELECT v.weapon,v.skin,v.category,v.condition,
             LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(v.base_cost_rub*(1+s.default_markup/100))))::integer,
             1,v.image_url,'SUPPLIER',FALSE,'BUYCS2',v."listingId",v."assetId",v.base_cost_rub,v.usd_cents,v.market_hash_name
-          FROM jsonb_to_recordset($1::jsonb) AS v("listingId" text,"assetId" text,market_hash_name text,weapon text,skin text,condition text,image_url text,base_cost_rub numeric,usd_cents bigint)
+          FROM jsonb_to_recordset($1::jsonb) AS v("listingId" text,"assetId" text,market_hash_name text,weapon text,category text,skin text,condition text,image_url text,base_cost_rub numeric,usd_cents bigint)
           CROSS JOIN supplier_pricing_settings s
           WHERE s.id=1
           ON CONFLICT (supplier_code,supplier_listing_id) WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
-          DO UPDATE SET weapon=EXCLUDED.weapon,skin=EXCLUDED.skin,condition=EXCLUDED.condition,
+          DO UPDATE SET weapon=EXCLUDED.weapon,skin=EXCLUDED.skin,category=EXCLUDED.category,condition=EXCLUDED.condition,
             image_url=EXCLUDED.image_url,quantity=1,steam_asset_id=EXCLUDED.steam_asset_id,base_cost_rub=EXCLUDED.base_cost_rub,
             supplier_cost_usd_cents=EXCLUDED.supplier_cost_usd_cents,supplier_market_hash_name=EXCLUDED.supplier_market_hash_name,
             price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(EXCLUDED.base_cost_rub*(1+COALESCE(products.markup_override,(SELECT default_markup FROM supplier_pricing_settings WHERE id=1))/100))))::integer,
