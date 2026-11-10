@@ -402,6 +402,7 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
 .rm-channel-cta{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:13px;min-height:42px;border-radius:11px;background:linear-gradient(110deg,#ff9a2b,#ff7900 60%,#dc5b00);color:#14100b!important;font-weight:850;font-size:14px;text-decoration:none;box-shadow:0 4px 14px #ff790020}
 .rm-channel-cta:active{transform:scale(.99)}
 @media(max-width:360px){.rm-channel{padding:12px}.rm-channel-name{font-size:14px}.rm-channel-avatar{width:49px;height:49px;flex-basis:49px}}
+.inventory-empty-message{font-size:17px!important;font-weight:800!important;line-height:1.45!important;color:#fff!important;margin:20px 0!important}
 </style><style>
 .featured-admin-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:9px}
 .featured-admin-actions button{font-size:12px!important;min-height:34px!important;padding:7px 9px!important;flex:1 1 auto}
@@ -771,7 +772,8 @@ async function loadInventory(){
  try{
   const data=await api('/api/steam/inventory');
   inventoryItems=Array.isArray(data.items)?data.items:[];selectedAssets.clear();renderInventory();
-  $('inventoryStatus').textContent=inventoryItems.length?'Доступно для выкупа: '+inventoryItems.length+' (рыночная цена от 40 ₽, предложение 75%).':'Нет подходящих предметов от 40 ₽ с подтверждённой ценой Skinport.';
+  $('inventoryStatus').textContent=inventoryItems.length?'Доступно для выкупа: '+inventoryItems.length+' (рыночная цена от 40 ₽, предложение 75%).':'Не найдено предметов стоимостью от 40 ₽.';
+  $('inventoryStatus').classList.toggle('inventory-empty-message',inventoryItems.length===0);
  }catch(e){
   const msg=String(e.message||e);
   const limited=/429|rate.limit|too many|ограничил|подожди|15 секунд|temporar|throttl/i.test(msg);
