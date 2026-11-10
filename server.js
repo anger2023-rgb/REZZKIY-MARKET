@@ -470,6 +470,26 @@ async function initDb(){
      ADD COLUMN IF NOT EXISTS rejection_reason TEXT`
   );
 
+  // Six manually curated products on the home page.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS featured_products(
+      product_id BIGINT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+      position SMALLINT NOT NULL UNIQUE CHECK(position BETWEEN 1 AND 6)
+    )
+  `);
+  await pool.query(`CREATE TABLE IF NOT EXISTS featured_settings(
+    id INTEGER PRIMARY KEY CHECK(id=1), initialized BOOLEAN NOT NULL DEFAULT TRUE
+  )`);
+  // On the first deployment preserve the current home selection (first four).
+  await pool.query(`
+    INSERT INTO featured_products(product_id,position)
+    SELECT id, ROW_NUMBER() OVER(ORDER BY created_at DESC,id DESC)::smallint
+    FROM (SELECT id,created_at FROM products WHERE source_type='OWN' AND quantity>0
+          ORDER BY created_at DESC,id DESC LIMIT 4) first_four
+    WHERE NOT EXISTS (SELECT 1 FROM featured_settings)
+    ON CONFLICT DO NOTHING
+  `);
+  await pool.query(`INSERT INTO featured_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
   console.log('Database ready');
 }
 
@@ -514,6 +534,53 @@ app.get('/api/products',async(_q,r)=>{
   }catch(e){
     bad(r,500,'Ошибка каталога');
   }
+});
+
+// Public selection: only active own-stock listings are visible.
+app.get('/api/featured',async(_q,r)=>{
+  try{
+    const x=await pool.query(`
+      SELECT f.product_id AS id, f.position
+      FROM featured_products f JOIN products p ON p.id=f.product_id
+      WHERE p.source_type='OWN' AND p.quantity>0
+      ORDER BY f.position
+    `);
+    r.set('Cache-Control','no-store');
+    r.json(x.rows);
+  }catch(e){console.error('Featured read:',e);bad(r,500,'Ошибка избранных товаров')}
+});
+
+// Admin can pin, unpin and reorder by submitting the complete ordered list.
+app.put('/api/admin/featured',admin,async(q,r)=>{
+  const ids=q.body?.ids;
+  if(!Array.isArray(ids)||ids.length>6||
+     ids.some(id=>!validId(id))||new Set(ids.map(String)).size!==ids.length){
+    return bad(r,400,'Выбери не более 6 разных товаров');
+  }
+  let client;
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(927301)');
+    if(ids.length){
+      const valid=await client.query(`SELECT id FROM products
+        WHERE id=ANY($1::bigint[]) AND source_type='OWN' AND quantity>0`,[ids.map(String)]);
+      if(valid.rowCount!==ids.length){
+        await client.query('ROLLBACK');
+        return bad(r,409,'Один из товаров отсутствует или закончился');
+      }
+    }
+    await client.query('DELETE FROM featured_products');
+    for(let i=0;i<ids.length;i++){
+      await client.query('INSERT INTO featured_products(product_id,position) VALUES($1,$2)',[String(ids[i]),i+1]);
+    }
+    await client.query('COMMIT');
+    r.set('Cache-Control','no-store');
+    r.json({ids:ids.map(String)});
+  }catch(e){
+    if(client)await client.query('ROLLBACK').catch(()=>{});
+    console.error('Featured save:',e);bad(r,500,'Не удалось сохранить закрепления');
+  }finally{if(client)client.release()}
 });
 
 app.get('/api/admin/supplier-products',admin,async(_q,r)=>{
