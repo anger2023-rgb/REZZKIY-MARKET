@@ -516,6 +516,21 @@ app.get('/api/products',async(_q,r)=>{
   }
 });
 
+app.get('/api/admin/supplier-products',admin,async(_q,r)=>{
+  try{
+    const x=await pool.query(`SELECT id,weapon,skin,condition,price,quantity,image_url,
+      source_type,supplier_code,supplier_listing_id,delivery_ready,created_at
+      FROM products WHERE source_type='SUPPLIER' ORDER BY created_at DESC,id DESC`);
+    r.set('Cache-Control','no-store');r.json(x.rows);
+  }catch(e){console.error('Supplier drafts:',e);bad(r,500,'Ошибка черновиков поставщика')}
+});
+
+app.get('/api/admin/suppliers',admin,(_q,r)=>{
+  r.set('Cache-Control','no-store');
+  r.json({connected:false,autoImport:false,checkoutEnabled:false,
+    message:'API поставщика не подключён. Товары поставщика сохраняются как черновики и недоступны покупателям.'});
+});
+
 app.get('/api/admin/me',admin,(q,r)=>{
   r.json({admin:true,id:q.admin.id});
 });
@@ -603,7 +618,11 @@ app.post('/api/products',admin,async(q,r)=>{
     condition,
     price,
     quantity,
-    image_url=''
+    image_url='',
+    source_type='OWN',
+    delivery_ready=false,
+    supplier_code=null,
+    supplier_listing_id=null
   }=q.body||{};
 
   if(
@@ -619,7 +638,11 @@ app.post('/api/products',admin,async(q,r)=>{
     quantity<0||
     quantity>2147483647||
     typeof image_url!=='string'||
-    image_url.length>2000
+    image_url.length>2000||
+    !['OWN','SUPPLIER'].includes(source_type)||
+    typeof delivery_ready!=='boolean'||
+    (supplier_code!==null&&(typeof supplier_code!=='string'||supplier_code.length>80))||
+    (supplier_listing_id!==null&&(typeof supplier_listing_id!=='string'||supplier_listing_id.length>150))
   ){
     return bad(r,400,'Проверь товар');
   }
@@ -641,8 +664,8 @@ app.post('/api/products',admin,async(q,r)=>{
     const x=await pool.query(
       `INSERT INTO products(
         weapon,skin,category,condition,
-        price,quantity,image_url
-      ) VALUES($1,$2,$3,$4,$5,$6,$7)
+        price,quantity,image_url,source_type,delivery_ready,supplier_code,supplier_listing_id
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       RETURNING *`,
       [
         weapon,
@@ -651,7 +674,9 @@ app.post('/api/products',admin,async(q,r)=>{
         condition,
         price,
         quantity,
-        image_url
+        image_url,source_type,source_type==='OWN'&&delivery_ready,
+        source_type==='SUPPLIER'?(supplier_code||null):null,
+        source_type==='SUPPLIER'?(supplier_listing_id||null):null
       ]
     );
 
@@ -678,6 +703,20 @@ app.patch('/api/admin/products/:id/readiness',admin,async(q,r)=>{
     console.error('Product readiness update:',e);
     bad(r,500,'Не удалось изменить готовность');
   }
+});
+
+app.patch('/api/admin/products/:id/source',admin,async(q,r)=>{
+  const type=q.body?.source_type;
+  if(!validId(q.params.id)||!['OWN','SUPPLIER'].includes(type))
+    return bad(r,400,'Неверный источник товара');
+  try{
+    const x=await pool.query(`UPDATE products
+      SET source_type=$2,delivery_ready=FALSE,
+          supplier_code=NULL,supplier_listing_id=NULL
+      WHERE id=$1 RETURNING id,source_type,delivery_ready`,[q.params.id,type]);
+    if(!x.rowCount)return bad(r,404,'Товар не найден');
+    r.json(x.rows[0]);
+  }catch(e){console.error('Change product source:',e);bad(r,500,'Ошибка смены источника')}
 });
 
 app.delete('/api/products/:id',admin,async(q,r)=>{
