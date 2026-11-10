@@ -469,7 +469,25 @@ function closeProfileSection(){
 }
 function go(id){if(id==='profile')closeProfileSection();document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));window.scrollTo(0,0);if(id==='sell')openSell();if(id==='cart')renderCart();if(id==='catalog')renderProducts();if(id==='admin'&&isAdmin){loadAdminBuyouts();loadAdminPayouts()}if(id==='profile'){loadProfile();loadMyOrders()}}
 function makeButton(label,action,cls='secondary'){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=action;return b}
-function makeProductCard(p){const card=document.createElement('div');card.className='card';const image=document.createElement('div');image.className='weapon';if(p.image_url){const img=document.createElement('img');img.src=p.image_url;img.alt=p.skin;image.appendChild(img)}else image.textContent='CS2';const body=document.createElement('div');body.className='card-body';const name=document.createElement('h3');name.textContent=p.weapon+' | '+p.skin;const condition=document.createElement('small');condition.textContent=p.condition;const price=document.createElement('div');price.className='price';price.textContent=money(p.price);const badge=document.createElement('span');badge.className='stock-badge';badge.textContent=p.source_type==='SUPPLIER'?'В наличии':'Быстро';badge.style.display=p.source_type==='SUPPLIER'||p.delivery_ready?'inline-block':'none';body.append(badge);body.append(name,condition,price,makeButton('Подробнее',()=>showDetails(p.id),'secondary full'),makeButton('В корзину',()=>addCart(p.id),'btn full'));if(isAdmin&&p.source_type==='OWN')body.appendChild(featuredControl(p));card.append(image,body);return card}
+async function adminRemoveCatalogProduct(p){
+ if(!isAdmin||!p)return;
+ const supplier=p.source_type==='SUPPLIER';
+ const message=supplier
+  ?'Снять этот товар BuyCS2 с каталога? Он останется в черновиках и его можно будет опубликовать снова.'
+  :'Удалить этот товар из каталога?';
+ if(!confirm(message))return;
+ try{
+  if(supplier){
+   await api('/api/admin/supplier-products/'+p.id+'/publish',{method:'PATCH',body:JSON.stringify({published:false})});
+  }else{
+   await api('/api/products/'+p.id,{method:'DELETE'});
+  }
+  cart=cart.filter(x=>String(x)!==String(p.id));saveCart();
+  await loadProducts();
+  if(supplier&&typeof loadSupplierDrafts==='function')loadSupplierDrafts(supplierDraftPage||1);
+ }catch(e){alert('Не удалось удалить товар из каталога: '+e.message)}
+}
+function makeProductCard(p){const card=document.createElement('div');card.className='card';const image=document.createElement('div');image.className='weapon';if(p.image_url){const img=document.createElement('img');img.src=p.image_url;img.alt=p.skin;image.appendChild(img)}else image.textContent='CS2';const body=document.createElement('div');body.className='card-body';const name=document.createElement('h3');name.textContent=p.weapon+' | '+p.skin;const condition=document.createElement('small');condition.textContent=p.condition;const price=document.createElement('div');price.className='price';price.textContent=money(p.price);const badge=document.createElement('span');badge.className='stock-badge';badge.textContent=p.source_type==='SUPPLIER'?'В наличии':'Быстро';badge.style.display=p.source_type==='SUPPLIER'||p.delivery_ready?'inline-block':'none';body.append(badge);body.append(name,condition,price,makeButton('Подробнее',()=>showDetails(p.id),'secondary full'),makeButton('В корзину',()=>addCart(p.id),'btn full'));if(isAdmin){if(p.source_type==='OWN')body.appendChild(featuredControl(p));body.appendChild(makeButton('Удалить из каталога',()=>adminRemoveCatalogProduct(p),'danger full'))}card.append(image,body);return card}
 function renderProducts(){const box=$('products');box.replaceChildren();const search=$('search').value.trim().toLowerCase();const filtered=listings.filter(p=>(p.weapon+' '+p.skin).toLowerCase().includes(search)&&(selectedCategory==='all'||p.category===selectedCategory)&&(selectedWeapon==='all'||p.weapon===selectedWeapon));filtered.forEach(p=>box.appendChild(makeProductCard(p)));if(!filtered.length)box.textContent='Скины не найдены'}
 function renderPopular(){const box=$('popular');box.replaceChildren();for(const id of featuredIds){const p=listings.find(x=>String(x.id)===String(id));if(p&&p.quantity>0)box.appendChild(makeProductCard(p))}if(!box.children.length)box.textContent='Скоро здесь появятся выбранные скины'}
 async function loadFeatured(){try{const rows=await api('/api/featured');featuredIds=rows.map(x=>String(x.id));renderPopular();if(isAdmin)renderAdminProducts()}catch(e){console.error('Featured:',e);$('popular').textContent='Не удалось загрузить популярные скины'}}
