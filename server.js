@@ -297,6 +297,8 @@ async function initDb(){
     id INTEGER PRIMARY KEY CHECK(id=1), default_markup NUMERIC(6,2) NOT NULL DEFAULT 5
   )`);
   await pool.query(`INSERT INTO supplier_pricing_settings(id,default_markup) VALUES(1,5) ON CONFLICT(id) DO NOTHING`);
+  await pool.query(`ALTER TABLE supplier_pricing_settings ADD COLUMN IF NOT EXISTS usd_rub NUMERIC(12,4)`);
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_cost_usd_cents BIGINT`);
   // Existing manual supplier drafts: current price is taken as baseline (not a verified BuyCS2 cost).
   await pool.query(`UPDATE products SET base_cost_rub=price WHERE source_type='SUPPLIER' AND base_cost_rub IS NULL`);
 
@@ -637,6 +639,93 @@ app.get('/api/admin/suppliers',admin,(_q,r)=>{
   r.set('Cache-Control','no-store');
   r.json({connected:false,autoImport:false,checkoutEnabled:false,
     message:'API поставщика не подключён. Товары поставщика сохраняются как черновики и недоступны покупателям.'});
+});
+
+// Import remains admin-only and draft-only. No supplier purchase endpoints are used.
+const buycs2Name = (name) => {
+  const full=String(name||'').trim();
+  const match=full.match(/\s\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred|Not Painted)\)$/);
+  const condition=match?.[1]||'Not Painted';
+  const bare=match?full.slice(0,-match[0].length):full;
+  const pipe=bare.indexOf(' | ');
+  return {weapon:pipe>=0?bare.slice(0,pipe):'Другое',skin:pipe>=0?bare.slice(pipe+3):bare,condition};
+};
+app.get('/api/admin/buycs2/import-settings',admin,async(_q,r)=>{
+  try{const x=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
+    r.set('Cache-Control','no-store');r.json({usdRub:x.rows[0]?.usd_rub===null?null:Number(x.rows[0].usd_rub)});
+  }catch(e){console.error('Import settings:',e);bad(r,500,'Ошибка настроек курса')}
+});
+app.put('/api/admin/buycs2/import-settings',admin,async(q,r)=>{
+  const rate=q.body?.usdRub;
+  if(typeof rate!=='number'||!Number.isFinite(rate)||rate<1||rate>1000||Math.round(rate*10000)!==rate*10000)
+    return bad(r,400,'Укажи курс USD/RUB от 1 до 1000, до 4 знаков после запятой');
+  try{await pool.query('UPDATE supplier_pricing_settings SET usd_rub=$1 WHERE id=1',[rate]);r.json({usdRub:rate})}
+  catch(e){console.error('Save rate:',e);bad(r,500,'Не удалось сохранить курс')}
+});
+let buycs2ImportRunning=false;
+app.post('/api/admin/buycs2/import',admin,async(_q,r)=>{
+  if(buycs2ImportRunning)return bad(r,409,'Импорт уже выполняется');
+  const merchantId=process.env.BUYCS2_MERCHANT_ID?.trim(),apiKey=process.env.BUYCS2_API_KEY?.trim();
+  if(!merchantId||!apiKey)return bad(r,503,'Не настроен BuyCS2 API');
+  buycs2ImportRunning=true;
+  try{
+    const settings=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
+    const rate=Number(settings.rows[0]?.usd_rub);
+    if(!Number.isFinite(rate)||rate<1)return bad(r,400,'Сначала сохрани курс USD/RUB');
+    const response=await fetch('https://api.buycs2.com/Items/GetAllItemsOnSale',{
+      headers:{'x-merchant-id':merchantId,'x-api-key':apiKey,'Accept':'application/json','Accept-Encoding':'gzip'},
+      signal:AbortSignal.timeout(60000)
+    });
+    if(!response.ok)return bad(r,502,'BuyCS2 не отдал каталог: HTTP '+response.status);
+    const payload=await response.json();
+    if(!payload||!Array.isArray(payload.items)||!Number.isSafeInteger(payload.totalItems)||payload.totalItems!==payload.items.length)
+      return bad(r,502,'Неполный или некорректный каталог BuyCS2: импорт отменён');
+    const rows=[];const seen=new Set();
+    for(const item of payload.items){
+      if(!Number.isSafeInteger(item.itemId)||item.itemId<=0||!Number.isSafeInteger(item.price)||item.price<=0||
+         typeof item.assetId!=='string'||!item.assetId||typeof item.market_hash_name!=='string'||!item.market_hash_name.trim())
+        return bad(r,502,'BuyCS2 прислал некорректный товар: импорт отменён');
+      const listingId=String(item.itemId);
+      if(seen.has(listingId))return bad(r,502,'Повторяющийся itemId: импорт отменён');
+      seen.add(listingId);
+      const cost=Math.ceil(item.price*rate/100);
+      if(!Number.isSafeInteger(cost)||cost<1||cost>100000000)return bad(r,502,'Цена товара вне допустимого диапазона');
+      const name=buycs2Name(item.market_hash_name);
+      const img=typeof item.img==='string'&&/^https:\/\//i.test(item.img)?item.img.slice(0,2048):'';
+      rows.push({listingId,weapon:name.weapon.slice(0,120),skin:name.skin.slice(0,240),condition:name.condition,
+        image_url:img,base_cost_rub:cost,usd_cents:item.price});
+    }
+    // Atomic replacement of the supplier draft snapshot. Existing manual drafts are untouched.
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      // Lock serializes concurrent admin markup changes with the import.
+      await client.query('SELECT id FROM supplier_pricing_settings WHERE id=1 FOR UPDATE');
+      for(let i=0;i<rows.length;i+=250){
+        const batch=JSON.stringify(rows.slice(i,i+250));
+        await client.query(`INSERT INTO products
+          (weapon,skin,category,condition,price,quantity,image_url,source_type,delivery_ready,supplier_code,supplier_listing_id,base_cost_rub,supplier_cost_usd_cents)
+          SELECT v.weapon,v.skin,'OTHER',v.condition,
+            LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(v.base_cost_rub*(1+s.default_markup/100))))::integer,
+            1,v.image_url,'SUPPLIER',FALSE,'BUYCS2',v."listingId",v.base_cost_rub,v.usd_cents
+          FROM jsonb_to_recordset($1::jsonb) AS v("listingId" text,weapon text,skin text,condition text,image_url text,base_cost_rub numeric,usd_cents bigint)
+          CROSS JOIN supplier_pricing_settings s
+          WHERE s.id=1
+          ON CONFLICT (supplier_code,supplier_listing_id) WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
+          DO UPDATE SET weapon=EXCLUDED.weapon,skin=EXCLUDED.skin,condition=EXCLUDED.condition,
+            image_url=EXCLUDED.image_url,quantity=1,base_cost_rub=EXCLUDED.base_cost_rub,
+            supplier_cost_usd_cents=EXCLUDED.supplier_cost_usd_cents,
+            price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(EXCLUDED.base_cost_rub*(1+COALESCE(products.markup_override,(SELECT default_markup FROM supplier_pricing_settings WHERE id=1))/100))))::integer,
+            delivery_ready=FALSE`,[batch]);
+      }
+      await client.query(`UPDATE products SET quantity=0 WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
+        AND NOT (supplier_listing_id=ANY($1::text[]))`,[rows.map(x=>x.listingId)]);
+      await client.query('COMMIT');
+    }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+    r.set('Cache-Control','no-store');r.json({imported:rows.length,usdRub:rate,publiclyVisible:false,purchasesEnabled:false,
+      message:'Черновики BuyCS2 обновлены. Продажи отключены.'});
+  }catch(e){console.error('BuyCS2 import:',e?.message||e);bad(r,502,'Импорт не выполнен: проверь ответ BuyCS2 и журнал Railway')}
+  finally{buycs2ImportRunning=false}
 });
 
 // BuyCS2 read-only connection test. No orders, transfers or catalog mutations.
