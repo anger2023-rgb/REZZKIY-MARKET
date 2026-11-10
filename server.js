@@ -662,45 +662,50 @@ app.put('/api/admin/buycs2/import-settings',admin,async(q,r)=>{
   try{await pool.query('UPDATE supplier_pricing_settings SET usd_rub=$1 WHERE id=1',[rate]);r.json({usdRub:rate})}
   catch(e){console.error('Save rate:',e);bad(r,500,'Не удалось сохранить курс')}
 });
-let buycs2ImportRunning=false;
-app.post('/api/admin/buycs2/import',admin,async(_q,r)=>{
-  if(buycs2ImportRunning)return bad(r,409,'Импорт уже выполняется');
+const buycs2ImportState={
+  running:false,status:'idle',message:'Импорт ещё не запускался',imported:0,total:0,usdRub:null,
+  startedAt:null,finishedAt:null,error:null
+};
+const setBuycs2ImportState=patch=>Object.assign(buycs2ImportState,patch);
+async function runBuycs2Import(){
   const merchantId=process.env.BUYCS2_MERCHANT_ID?.trim(),apiKey=process.env.BUYCS2_API_KEY?.trim();
-  if(!merchantId||!apiKey)return bad(r,503,'Не настроен BuyCS2 API');
-  buycs2ImportRunning=true;
   try{
+    if(!merchantId||!apiKey)throw Error('Не настроен BuyCS2 API');
     const settings=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
     const rate=Number(settings.rows[0]?.usd_rub);
-    if(!Number.isFinite(rate)||rate<1)return bad(r,400,'Сначала сохрани курс USD/RUB');
+    if(!Number.isFinite(rate)||rate<1)throw Error('Сначала сохрани курс USD/RUB');
+    setBuycs2ImportState({status:'fetching',message:'Получаем каталог BuyCS2...',usdRub:rate});
     const response=await fetch('https://api.buycs2.com/Items/GetAllItemsOnSale',{
       headers:{'x-merchant-id':merchantId,'x-api-key':apiKey,'Accept':'application/json','Accept-Encoding':'gzip'},
-      signal:AbortSignal.timeout(60000)
+      signal:AbortSignal.timeout(90000)
     });
-    if(!response.ok)return bad(r,502,'BuyCS2 не отдал каталог: HTTP '+response.status);
+    if(!response.ok)throw Error('BuyCS2 не отдал каталог: HTTP '+response.status);
     const payload=await response.json();
-    if(!payload||!Array.isArray(payload.items)||!Number.isSafeInteger(payload.totalItems)||payload.totalItems!==payload.items.length)
-      return bad(r,502,'Неполный или некорректный каталог BuyCS2: импорт отменён');
+    if(!payload||!Array.isArray(payload.items))throw Error('Некорректный формат каталога BuyCS2');
+    if(Number.isSafeInteger(payload.totalItems)&&payload.totalItems!==payload.items.length)
+      throw Error('BuyCS2 вернул неполный каталог');
     const rows=[];const seen=new Set();
     for(const item of payload.items){
       if(!Number.isSafeInteger(item.itemId)||item.itemId<=0||!Number.isSafeInteger(item.price)||item.price<=0||
          typeof item.assetId!=='string'||!item.assetId||typeof item.market_hash_name!=='string'||!item.market_hash_name.trim())
-        return bad(r,502,'BuyCS2 прислал некорректный товар: импорт отменён');
+        continue;
       const listingId=String(item.itemId);
-      if(seen.has(listingId))return bad(r,502,'Повторяющийся itemId: импорт отменён');
+      if(seen.has(listingId))continue;
       seen.add(listingId);
       const cost=Math.ceil(item.price*rate/100);
-      if(!Number.isSafeInteger(cost)||cost<1||cost>100000000)return bad(r,502,'Цена товара вне допустимого диапазона');
+      if(!Number.isSafeInteger(cost)||cost<1||cost>100000000)continue;
       const name=buycs2Name(item.market_hash_name);
       const img=typeof item.img==='string'&&/^https:\/\//i.test(item.img)?item.img.slice(0,2048):'';
       rows.push({listingId,weapon:name.weapon.slice(0,120),skin:name.skin.slice(0,240),condition:name.condition,
         image_url:img,base_cost_rub:cost,usd_cents:item.price});
     }
-    // Atomic replacement of the supplier draft snapshot. Existing manual drafts are untouched.
+    if(!rows.length)throw Error('В каталоге BuyCS2 не найдено подходящих товаров');
+    setBuycs2ImportState({status:'saving',message:'Записываем '+rows.length+' товаров в черновики...',total:rows.length});
     const client=await pool.connect();
     try{
       await client.query('BEGIN');
-      // Lock serializes concurrent admin markup changes with the import.
       await client.query('SELECT id FROM supplier_pricing_settings WHERE id=1 FOR UPDATE');
+      let saved=0;
       for(let i=0;i<rows.length;i+=250){
         const batch=JSON.stringify(rows.slice(i,i+250));
         await client.query(`INSERT INTO products
@@ -717,15 +722,34 @@ app.post('/api/admin/buycs2/import',admin,async(_q,r)=>{
             supplier_cost_usd_cents=EXCLUDED.supplier_cost_usd_cents,
             price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(EXCLUDED.base_cost_rub*(1+COALESCE(products.markup_override,(SELECT default_markup FROM supplier_pricing_settings WHERE id=1))/100))))::integer,
             delivery_ready=FALSE`,[batch]);
+        saved=Math.min(i+250,rows.length);
+        setBuycs2ImportState({imported:saved,message:'Записано '+saved+' из '+rows.length+'...'});
       }
       await client.query(`UPDATE products SET quantity=0 WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
         AND NOT (supplier_listing_id=ANY($1::text[]))`,[rows.map(x=>x.listingId)]);
       await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
-    r.set('Cache-Control','no-store');r.json({imported:rows.length,usdRub:rate,publiclyVisible:false,purchasesEnabled:false,
-      message:'Черновики BuyCS2 обновлены. Продажи отключены.'});
-  }catch(e){console.error('BuyCS2 import:',e?.message||e);bad(r,502,'Импорт не выполнен: проверь ответ BuyCS2 и журнал Railway')}
-  finally{buycs2ImportRunning=false}
+    setBuycs2ImportState({running:false,status:'done',message:'Черновики BuyCS2 обновлены',imported:rows.length,total:rows.length,
+      usdRub:rate,finishedAt:new Date().toISOString(),error:null});
+  }catch(e){
+    console.error('BuyCS2 import:',e?.message||e);
+    setBuycs2ImportState({running:false,status:'error',message:e?.message||'Импорт не выполнен',error:e?.message||'Ошибка импорта',finishedAt:new Date().toISOString()});
+  }
+}
+app.get('/api/admin/buycs2/import-status',admin,(_q,r)=>{
+  r.set('Cache-Control','no-store');
+  r.json({...buycs2ImportState,purchasesEnabled:false,publiclyVisible:false});
+});
+app.post('/api/admin/buycs2/import',admin,async(_q,r)=>{
+  if(buycs2ImportState.running)return r.status(202).json({...buycs2ImportState,alreadyRunning:true});
+  const settings=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
+  const rate=Number(settings.rows[0]?.usd_rub);
+  if(!Number.isFinite(rate)||rate<1)return bad(r,400,'Сначала сохрани курс USD/RUB');
+  if(!process.env.BUYCS2_MERCHANT_ID?.trim()||!process.env.BUYCS2_API_KEY?.trim())return bad(r,503,'Не настроен BuyCS2 API');
+  setBuycs2ImportState({running:true,status:'starting',message:'Импорт запущен...',imported:0,total:0,usdRub:rate,
+    startedAt:new Date().toISOString(),finishedAt:null,error:null});
+  setImmediate(()=>{runBuycs2Import().catch(e=>console.error('BuyCS2 background import:',e))});
+  r.status(202).set('Cache-Control','no-store').json({...buycs2ImportState,accepted:true});
 });
 
 // BuyCS2 read-only connection test. No orders, transfers or catalog mutations.
