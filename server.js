@@ -13,7 +13,7 @@ const DIR=path.dirname(fileURLToPath(import.meta.url));
 const SITE_URL='https://rezzkiy-market-production-dbf4.up.railway.app';
 const OPENID='https://steamcommunity.com/openid/login';
 const NS='http://specs.openid.net/auth/2.0';
-const RULES='2026-11-07-v1';
+const RULES='2026-11-10-auto-buyout-v2';
 
 app.disable('x-powered-by');
 app.use(express.json({limit:'5mb'}));
@@ -1035,6 +1035,44 @@ app.get('/api/steam/me',user,async(q,r)=>{
   }
 });
 
+// Skinport public prices: server-side cached, never trust client quotations.
+const skinportCache={prices:new Map(),expires:0,inflight:null};
+const MIN_MARKET_RUB=40;
+const BUYOUT_RATE=.75;
+async function skinportPrices(){
+  if(skinportCache.expires>Date.now()&&skinportCache.prices.size)return skinportCache.prices;
+  if(skinportCache.inflight)return skinportCache.inflight;
+  skinportCache.inflight=(async()=>{
+    const u='https://api.skinport.com/v1/items?app_id=730&currency=RUB&tradable=0';
+    const resp=await fetch(u,{headers:{'Accept':'application/json','Accept-Encoding':'gzip, deflate, br'},signal:AbortSignal.timeout(18000)});
+    if(!resp.ok)throw Error('Skinport HTTP '+resp.status);
+    const data=await resp.json();
+    if(!Array.isArray(data))throw Error('Skinport вернул неожиданный формат');
+    const prices=new Map();
+    for(const p of data){
+      const name=String(p.market_hash_name||'');
+      const value=Number(p.min_price);
+      if(name&&Number.isFinite(value)&&value>0)prices.set(name,value);
+    }
+    if(!prices.size)throw Error('Skinport не вернул цены');
+    skinportCache.prices=prices;skinportCache.expires=Date.now()+6*60*1000;
+    return prices;
+  })();
+  try{return await skinportCache.inflight}
+  catch(e){if(skinportCache.prices.size&&skinportCache.expires+9*60*1000>Date.now())return skinportCache.prices;throw e}
+  finally{skinportCache.inflight=null}
+}
+function quoteInventory(items,prices){
+  return items.flatMap(item=>{
+    // Unusual item variants and nonstandard overpay require individual appraisal.
+    if(/(?:Sticker|Charm|Patch|Graffiti|Sealed Graffiti|Case|Container|Key|Music Kit|Agent|Pin|Collectible)/i.test(item.type||''))return [];
+    const market=prices.get(item.name);
+    if(!Number.isFinite(market)||market<MIN_MARKET_RUB)return [];
+    const buyout=Math.floor(market*BUYOUT_RATE*100)/100;
+    if(buyout<=0)return [];
+    return [{...item,market_rub:market,buyout_rub:buyout}];
+  });
+}
 const inventoryCache=new Map();
 const inventoryRequests=new Map();
 
@@ -1192,10 +1230,9 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached?.steamId===id&&
       cached.expires>Date.now()
     ){
-      return r.json({
-        items:cached.items,
-        count:cached.items.length
-      });
+      const prices=await skinportPrices();
+      const quoted=quoteInventory(cached.items,prices);
+      return r.json({items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB});
     }
 
     if(
@@ -1217,10 +1254,9 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       }
     );
 
-    r.json({
-      items,
-      count:items.length
-    });
+    const prices=await skinportPrices();
+    const quoted=quoteInventory(items,prices);
+    r.json({items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB});
   }catch(e){
     bad(r,e.status||502,e.message);
   }
@@ -1266,25 +1302,20 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
       );
     }
 
+    // Reprice on the server immediately before accepting an order.
+    const prices=await skinportPrices();
+    const quoted=quoteInventory(items,prices);
+    if(quoted.length!==items.length)return bad(r,409,'Цена изменилась. Обнови инвентарь');
+    const totalKopecks=quoted.reduce((sum,item)=>sum+Math.round(item.buyout_rub*100)*Number(item.amount||1),0);
+    const offer=Math.floor(totalKopecks/100);
+    if(!Number.isSafeInteger(offer)||offer<1||offer>2147483647)return bad(r,400,'Неверная сумма выкупа');
     const x=await pool.query(
       `INSERT INTO buyout_requests(
-        telegram_id,
-        steam_id,
-        items,
-        seller_username,
-        seller_name
-      ) VALUES($1,$2,$3::jsonb,$4,$5)
-      RETURNING id,status`,
-      [
-        q.telegramUser.id,
-        id,
-        JSON.stringify(items),
-        q.telegramUser.username||null,
-        [
-          q.telegramUser.first_name,
-          q.telegramUser.last_name
-        ].filter(Boolean).join(' ')||null
-      ]
+        telegram_id,steam_id,items,seller_username,seller_name,offer_rub,status
+      ) VALUES($1,$2,$3::jsonb,$4,$5,$6,'quoted')
+      RETURNING id,status,offer_rub`,
+      [q.telegramUser.id,id,JSON.stringify(quoted),q.telegramUser.username||null,
+       [q.telegramUser.first_name,q.telegramUser.last_name].filter(Boolean).join(' ')||null,offer]
     );
 
     r.status(201).json(x.rows[0]);
@@ -1418,7 +1449,7 @@ app.post('/api/admin/buyouts/:id/quote',admin,async(q,r)=>{
            payment_saved_at=NULL,
            updated_at=NOW()
        WHERE id=$2
-       AND status IN ('pending','quoted')
+       AND status='pending'
        RETURNING id,status,offer_rub`,
       [price,q.params.id]
     );
