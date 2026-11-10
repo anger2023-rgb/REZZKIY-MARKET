@@ -16,7 +16,7 @@ const NS='http://specs.openid.net/auth/2.0';
 const RULES='2026-11-10-auto-buyout-v2';
 
 app.disable('x-powered-by');
-app.use(express.json({limit:'5mb'}));
+app.use(express.json({limit:'5mb',verify:(req,_res,buf)=>{req.rawBody=Buffer.from(buf)}}));
 
 const pool=new Pool({
   connectionString:process.env.DATABASE_URL,
@@ -300,6 +300,8 @@ async function initDb(){
   await pool.query(`INSERT INTO supplier_pricing_settings(id,default_markup) VALUES(1,5) ON CONFLICT(id) DO NOTHING`);
   await pool.query(`ALTER TABLE supplier_pricing_settings ADD COLUMN IF NOT EXISTS usd_rub NUMERIC(12,4)`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_cost_usd_cents BIGINT`);
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_published BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_market_hash_name TEXT`);
   // Existing manual supplier drafts: current price is taken as baseline (not a verified BuyCS2 cost).
   await pool.query(`UPDATE products SET base_cost_rub=price WHERE source_type='SUPPLIER' AND base_cost_rub IS NULL`);
 
@@ -438,6 +440,30 @@ async function initDb(){
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS supplier_fulfillments(
+      id BIGSERIAL PRIMARY KEY,
+      order_id BIGINT NOT NULL REFERENCES usdt_orders(id) ON DELETE CASCADE,
+      product_id BIGINT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'BUYCS2',
+      external_id TEXT NOT NULL UNIQUE,
+      market_hash_name TEXT NOT NULL,
+      max_price_usd_cents BIGINT NOT NULL CHECK(max_price_usd_cents>0),
+      trade_url TEXT NOT NULL,
+      trade_id TEXT UNIQUE,
+      offer_id TEXT,
+      status TEXT NOT NULL DEFAULT 'QUEUED',
+      fail_reason TEXT,
+      error_code INTEGER,
+      actual_price_usd_cents BIGINT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      UNIQUE(order_id,product_id)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS supplier_fulfillments_order_idx ON supplier_fulfillments(order_id)`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS balance_purchases(
       order_id BIGINT PRIMARY KEY REFERENCES usdt_orders(id),
       telegram_id BIGINT NOT NULL,
@@ -540,7 +566,9 @@ app.get('/api/products',async(_q,r)=>{
     const result=await pool.query(
       `SELECT id,weapon,skin,category,condition,price,quantity,image_url,
               source_type,delivery_ready,created_at
-       FROM products WHERE source_type='OWN'
+       FROM products
+       WHERE (source_type='OWN' OR (source_type='SUPPLIER' AND supplier_published=TRUE))
+         AND quantity>0
        ORDER BY created_at DESC,id DESC`
     );
 
@@ -609,7 +637,7 @@ app.get('/api/admin/supplier-products',admin,async(q,r)=>{
     const count=await pool.query(`SELECT COUNT(*)::int AS total FROM products WHERE ${where}`,params);
     params.push(limit,offset);
     const x=await pool.query(`SELECT id,weapon,skin,condition,price,quantity,image_url,
-      source_type,supplier_code,supplier_listing_id,delivery_ready,created_at,base_cost_rub,markup_override
+      source_type,supplier_code,supplier_listing_id,steam_asset_id,delivery_ready,created_at,base_cost_rub,markup_override,supplier_published,supplier_market_hash_name
       FROM products WHERE ${where} ORDER BY id DESC LIMIT $${params.length-1} OFFSET $${params.length}`,params);
     const total=Number(count.rows[0]?.total||0);
     r.set('Cache-Control','no-store');
@@ -636,6 +664,19 @@ app.put('/api/admin/supplier-markup',admin,async(q,r)=>{
   }catch(e){await client.query('ROLLBACK');console.error('Save supplier markup:',e);bad(r,500,'Не удалось сохранить наценку')}
   finally{client.release()}
 });
+app.patch('/api/admin/supplier-products/:id/publish',admin,async(q,r)=>{
+  const published=q.body?.published;
+  if(!validId(q.params.id)||typeof published!=='boolean')return bad(r,400,'Неверные данные публикации');
+  try{
+    const x=await pool.query(`UPDATE products SET supplier_published=$2
+      WHERE id=$1 AND source_type='SUPPLIER' AND supplier_code='BUYCS2'
+        AND ($2=FALSE OR (quantity>0 AND supplier_cost_usd_cents IS NOT NULL AND supplier_market_hash_name IS NOT NULL))
+      RETURNING id,supplier_published,quantity`,[q.params.id,published]);
+    if(!x.rowCount)return bad(r,409,'Товар поставщика недоступен для публикации');
+    r.json(x.rows[0]);
+  }catch(e){console.error('Supplier publish:',e);bad(r,500,'Не удалось изменить публикацию')}
+});
+
 app.patch('/api/admin/supplier-products/:id/markup',admin,async(q,r)=>{
   const value=q.body?.markup;
   if(!validId(q.params.id)||!(value===null||validMarkup(value)))return bad(r,400,'Неверная наценка');
@@ -649,8 +690,8 @@ app.patch('/api/admin/supplier-products/:id/markup',admin,async(q,r)=>{
 
 app.get('/api/admin/suppliers',admin,(_q,r)=>{
   r.set('Cache-Control','no-store');
-  r.json({connected:false,autoImport:false,checkoutEnabled:false,
-    message:'API поставщика не подключён. Товары поставщика сохраняются как черновики и недоступны покупателям.'});
+  r.json({connected:Boolean(process.env.BUYCS2_API_KEY&&process.env.BUYCS2_MERCHANT_ID),autoImport:false,checkoutEnabled:true,
+    message:'BuyCS2 подключён. Опубликованные товары могут выкупаться автоматически после оплаты и ввода Steam Trade URL.'});
 });
 
 // Import remains admin-only and draft-only. No supplier purchase endpoints are used.
@@ -708,7 +749,7 @@ async function runBuycs2Import(){
       if(!Number.isSafeInteger(cost)||cost<1||cost>100000000)continue;
       const name=buycs2Name(item.market_hash_name);
       const img=typeof item.img==='string'&&/^https:\/\//i.test(item.img)?item.img.slice(0,2048):'';
-      rows.push({listingId,weapon:name.weapon.slice(0,120),skin:name.skin.slice(0,240),condition:name.condition,
+      rows.push({listingId,assetId:item.assetId,market_hash_name:item.market_hash_name.trim(),weapon:name.weapon.slice(0,120),skin:name.skin.slice(0,240),condition:name.condition,
         image_url:img,base_cost_rub:cost,usd_cents:item.price});
     }
     if(!rows.length)throw Error('В каталоге BuyCS2 не найдено подходящих товаров');
@@ -721,17 +762,17 @@ async function runBuycs2Import(){
       for(let i=0;i<rows.length;i+=250){
         const batch=JSON.stringify(rows.slice(i,i+250));
         await client.query(`INSERT INTO products
-          (weapon,skin,category,condition,price,quantity,image_url,source_type,delivery_ready,supplier_code,supplier_listing_id,base_cost_rub,supplier_cost_usd_cents)
+          (weapon,skin,category,condition,price,quantity,image_url,source_type,delivery_ready,supplier_code,supplier_listing_id,steam_asset_id,base_cost_rub,supplier_cost_usd_cents,supplier_market_hash_name)
           SELECT v.weapon,v.skin,'OTHER',v.condition,
             LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(v.base_cost_rub*(1+s.default_markup/100))))::integer,
-            1,v.image_url,'SUPPLIER',FALSE,'BUYCS2',v."listingId",v.base_cost_rub,v.usd_cents
-          FROM jsonb_to_recordset($1::jsonb) AS v("listingId" text,weapon text,skin text,condition text,image_url text,base_cost_rub numeric,usd_cents bigint)
+            1,v.image_url,'SUPPLIER',FALSE,'BUYCS2',v."listingId",v."assetId",v.base_cost_rub,v.usd_cents,v.market_hash_name
+          FROM jsonb_to_recordset($1::jsonb) AS v("listingId" text,"assetId" text,market_hash_name text,weapon text,skin text,condition text,image_url text,base_cost_rub numeric,usd_cents bigint)
           CROSS JOIN supplier_pricing_settings s
           WHERE s.id=1
           ON CONFLICT (supplier_code,supplier_listing_id) WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
           DO UPDATE SET weapon=EXCLUDED.weapon,skin=EXCLUDED.skin,condition=EXCLUDED.condition,
-            image_url=EXCLUDED.image_url,quantity=1,base_cost_rub=EXCLUDED.base_cost_rub,
-            supplier_cost_usd_cents=EXCLUDED.supplier_cost_usd_cents,
+            image_url=EXCLUDED.image_url,quantity=1,steam_asset_id=EXCLUDED.steam_asset_id,base_cost_rub=EXCLUDED.base_cost_rub,
+            supplier_cost_usd_cents=EXCLUDED.supplier_cost_usd_cents,supplier_market_hash_name=EXCLUDED.supplier_market_hash_name,
             price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(EXCLUDED.base_cost_rub*(1+COALESCE(products.markup_override,(SELECT default_markup FROM supplier_pricing_settings WHERE id=1))/100))))::integer,
             delivery_ready=FALSE`,[batch]);
         saved=Math.min(i+250,rows.length);
@@ -750,7 +791,7 @@ async function runBuycs2Import(){
 }
 app.get('/api/admin/buycs2/import-status',admin,(_q,r)=>{
   r.set('Cache-Control','no-store');
-  r.json({...buycs2ImportState,purchasesEnabled:false,publiclyVisible:false});
+  r.json({...buycs2ImportState,purchasesEnabled:true,publiclyVisible:true});
 });
 app.post('/api/admin/buycs2/import',admin,async(_q,r)=>{
   if(buycs2ImportState.running)return r.status(202).json({...buycs2ImportState,alreadyRunning:true});
@@ -2445,6 +2486,62 @@ app.put('/api/admin/payment-settings',admin,async(q,r)=>{
   }
 });
 
+
+const BUYCS2_API='https://api.buycs2.com';
+const buycs2Headers=()=>({
+  'x-merchant-id':String(process.env.BUYCS2_MERCHANT_ID||'').trim(),
+  'x-api-key':String(process.env.BUYCS2_API_KEY||'').trim(),
+  'Accept':'application/json','Content-Type':'application/json','Accept-Encoding':'gzip'
+});
+
+async function buycs2Request(pathname,{method='GET',body}={}){
+  if(!process.env.BUYCS2_MERCHANT_ID||!process.env.BUYCS2_API_KEY)throw Error('BuyCS2 API не настроен');
+  const res=await fetch(BUYCS2_API+pathname,{method,headers:buycs2Headers(),body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok){const e=Error(data?.message||data?.error||('BuyCS2 HTTP '+res.status));e.code=data?.error||'buycs2_error';e.status=res.status;throw e}
+  return data;
+}
+
+async function processBuycs2Fulfillments(orderId){
+  const rows=(await pool.query(`SELECT * FROM supplier_fulfillments WHERE order_id=$1 AND status IN ('QUEUED','FAILED') ORDER BY id`,[orderId])).rows;
+  for(const row of rows){
+    try{
+      await pool.query(`UPDATE supplier_fulfillments SET status='PURCHASING',updated_at=NOW(),fail_reason=NULL,error_code=NULL WHERE id=$1`,[row.id]);
+      const data=await buycs2Request('/Items/BuyByName',{method:'POST',body:{
+        market_hash_name:row.market_hash_name,
+        maxPrice:Number(row.max_price_usd_cents),
+        tradeUrl:row.trade_url,
+        externalId:row.external_id,
+        tradeDurationSeconds:1800
+      }});
+      await pool.query(`UPDATE supplier_fulfillments SET trade_id=$2,status='PENDING',actual_price_usd_cents=$3,updated_at=NOW() WHERE id=$1`,[row.id,data.tradeId||null,Number(data.price||row.max_price_usd_cents)]);
+    }catch(e){
+      await pool.query(`UPDATE supplier_fulfillments SET status='FAILED',fail_reason=$2,updated_at=NOW() WHERE id=$1`,[row.id,String(e?.message||'Ошибка BuyCS2').slice(0,500)]).catch(()=>{});
+      console.error('BuyCS2 fulfillment:',orderId,row.id,e?.message||e);
+    }
+  }
+}
+
+app.post('/api/buycs2/webhook',async(q,r)=>{
+  try{
+    const sig=String(q.get('x-signature')||'').trim().toLowerCase();
+    if(!/^[0-9a-f]{64}$/.test(sig)||!process.env.BUYCS2_API_KEY||!q.rawBody)return r.sendStatus(401);
+    const expected=crypto.createHmac('sha256',process.env.BUYCS2_API_KEY).update(q.rawBody).digest('hex');
+    const a=Buffer.from(sig,'hex'),b=Buffer.from(expected,'hex');
+    if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return r.sendStatus(401);
+    const type=String(q.get('x-webhook-type')||'');
+    if(type==='trade_updated'){
+      const d=q.body||{};
+      const completed=d.status==='COMPLETED'?new Date():null;
+      await pool.query(`UPDATE supplier_fulfillments SET status=$1,offer_id=$2,fail_reason=$3,error_code=$4,updated_at=NOW(),completed_at=CASE WHEN $1='COMPLETED' THEN NOW() ELSE completed_at END
+        WHERE trade_id=$5 OR external_id=$6`,[String(d.status||'UNKNOWN'),d.offerId||null,d.failReason||null,Number.isInteger(d.errorCode)?d.errorCode:null,d.tradeId||null,d.externalId||null]);
+    }else if(type==='item_removed'){
+      const id=Number(q.body?.itemId);if(Number.isSafeInteger(id))await pool.query(`UPDATE products SET quantity=0 WHERE supplier_code='BUYCS2' AND supplier_listing_id=$1`,[String(id)]);
+    }
+    r.sendStatus(204);
+  }catch(e){console.error('BuyCS2 webhook:',e);r.sendStatus(500)}
+});
+
 /* Atomic balance checkout: authenticated user, locked products and per-user ledger. */
 app.post('/api/orders/balance',user,async(q,r)=>{
   const ids=q.body?.productIds;
@@ -2458,15 +2555,17 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1::bigint)',[q.telegramUser.id]);
     const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity,source_type FROM products
+      `SELECT id,weapon,skin,condition,price,quantity,source_type,supplier_code,supplier_listing_id,steam_asset_id,supplier_cost_usd_cents,supplier_market_hash_name,supplier_published FROM products
        WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`,[ids]);
-    if(products.rowCount!==ids.length||products.rows.some(p=>p.quantity<1||p.source_type!=='OWN')){
+    if(products.rowCount!==ids.length||products.rows.some(p=>p.quantity<1||(p.source_type==='SUPPLIER'&&(!p.supplier_published||p.supplier_code!=='BUYCS2'||!p.supplier_cost_usd_cents||!p.supplier_market_hash_name)))){
       await client.query('ROLLBACK');
       return bad(r,409,'Некоторые скины закончились или недоступны');
     }
     const items=ids.map(id=>{
       const p=products.rows.find(x=>String(x.id)===String(id));
-      return {product_id:p.id,weapon:p.weapon,skin:p.skin,condition:p.condition,price:p.price,quantity:1};
+      return {product_id:p.id,weapon:p.weapon,skin:p.skin,condition:p.condition,price:p.price,quantity:1,source_type:p.source_type,
+        supplier_code:p.supplier_code||null,supplier_listing_id:p.supplier_listing_id||null,steam_asset_id:p.steam_asset_id||null,
+        supplier_cost_usd_cents:p.supplier_cost_usd_cents===null?null:Number(p.supplier_cost_usd_cents),supplier_market_hash_name:p.supplier_market_hash_name||null};
     });
     const total=items.reduce((sum,p)=>sum+Number(p.price),0);
     if(!Number.isSafeInteger(total)||total<1||total>2147483647){
@@ -2490,7 +2589,7 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     await client.query(`INSERT INTO balance_purchases(order_id,telegram_id,amount_rub)
       VALUES($1,$2,$3)`,[order.rows[0].id,q.telegramUser.id,total]);
     for(const id of ids){
-      await client.query('UPDATE products SET quantity=quantity-1 WHERE id=$1',[id]);
+      await client.query(`UPDATE products SET quantity=quantity-1 WHERE id=$1 AND source_type='OWN'`,[id]);
     }
     await client.query('COMMIT');
     r.status(201).json({...order.rows[0],balanceRub:balance-total});
@@ -2546,7 +2645,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
     }
 
     const products=await client.query(
-      `SELECT id,weapon,skin,condition,price,quantity,source_type
+      `SELECT id,weapon,skin,condition,price,quantity,source_type,supplier_code,supplier_listing_id,steam_asset_id,supplier_cost_usd_cents,supplier_market_hash_name,supplier_published
        FROM products
        WHERE id=ANY($1::bigint[])
        FOR UPDATE`,
@@ -2558,7 +2657,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       return bad(r,409,'Некоторые товары уже недоступны');
     }
 
-    if(products.rows.some(p=>p.quantity<1||p.source_type!=='OWN')){
+    if(products.rows.some(p=>p.quantity<1||(p.source_type==='SUPPLIER'&&(!p.supplier_published||p.supplier_code!=='BUYCS2'||!p.supplier_cost_usd_cents||!p.supplier_market_hash_name)))){
       await client.query('ROLLBACK');
       return bad(r,409,'Один из товаров закончился');
     }
@@ -2574,7 +2673,13 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
         skin:p.skin,
         condition:p.condition,
         price:p.price,
-        quantity:1
+        quantity:1,
+        source_type:p.source_type,
+        supplier_code:p.supplier_code||null,
+        supplier_listing_id:p.supplier_listing_id||null,
+        steam_asset_id:p.steam_asset_id||null,
+        supplier_cost_usd_cents:p.supplier_cost_usd_cents===null?null:Number(p.supplier_cost_usd_cents),
+        supplier_market_hash_name:p.supplier_market_hash_name||null
       };
     });
 
@@ -2769,101 +2874,54 @@ function parseSteamTradeUrl(raw){
 }
 
 app.post('/api/orders/:id/withdraw',user,async(q,r)=>{
-  if(!validId(q.params.id)){
-    return bad(r,400,'Неверный заказ');
-  }
-
-  const tradeUrl=parseSteamTradeUrl(
-    q.body?.trade_url
-  );
-
-  if(!tradeUrl){
-    return bad(r,400,'Неверная Steam Trade URL');
-  }
-
+  if(!validId(q.params.id))return bad(r,400,'Неверный заказ');
+  const tradeUrl=parseSteamTradeUrl(q.body?.trade_url);
+  if(!tradeUrl)return bad(r,400,'Неверная Steam Trade URL');
   const tgUser=q.telegramUser;
-
-  const username=String(
-    tgUser.username||''
-  ).slice(0,100);
-
-  const name=[
-    tgUser.first_name,
-    tgUser.last_name
-  ].filter(Boolean).join(' ').slice(0,200);
-
+  const username=String(tgUser.username||'').slice(0,100);
+  const name=[tgUser.first_name,tgUser.last_name].filter(Boolean).join(' ').slice(0,200);
   let client;
-
   try{
-    client=await pool.connect();
-    await client.query('BEGIN');
-
-    const order=await client.query(
-      `SELECT id,telegram_id,items,status
-       FROM usdt_orders
-       WHERE id=$1 AND telegram_id=$2
-       FOR UPDATE`,
-      [
-        q.params.id,
-        tgUser.id
-      ]
-    );
-
-    if(!order.rowCount){
-      await client.query('ROLLBACK');
-      return bad(r,404,'Заказ не найден');
+    client=await pool.connect();await client.query('BEGIN');
+    const order=await client.query(`SELECT id,telegram_id,items,status FROM usdt_orders WHERE id=$1 AND telegram_id=$2 FOR UPDATE`,[q.params.id,tgUser.id]);
+    if(!order.rowCount){await client.query('ROLLBACK');return bad(r,404,'Заказ не найден')}
+    if(order.rows[0].status!=='paid'){await client.query('ROLLBACK');return bad(r,409,'Оплата ещё не подтверждена')}
+    const items=Array.isArray(order.rows[0].items)?order.rows[0].items:[];
+    const supplierItems=items.filter(x=>x.source_type==='SUPPLIER'&&x.supplier_code==='BUYCS2');
+    const ownItems=items.filter(x=>x.source_type!=='SUPPLIER');
+    for(const item of supplierItems){
+      if(!item.product_id||!item.supplier_market_hash_name||!Number(item.supplier_cost_usd_cents))continue;
+      const externalId=`rezzkiy_order_${order.rows[0].id}_product_${item.product_id}`;
+      await client.query(`INSERT INTO supplier_fulfillments(order_id,product_id,external_id,market_hash_name,max_price_usd_cents,trade_url,status)
+        VALUES($1,$2,$3,$4,$5,$6,'QUEUED') ON CONFLICT(order_id,product_id) DO UPDATE SET
+          trade_url=EXCLUDED.trade_url,status=CASE WHEN supplier_fulfillments.status='FAILED' THEN 'QUEUED' ELSE supplier_fulfillments.status END,updated_at=NOW()`,
+        [order.rows[0].id,item.product_id,externalId,item.supplier_market_hash_name,Number(item.supplier_cost_usd_cents),tradeUrl]);
     }
-
-    if(order.rows[0].status!=='paid'){
-      await client.query('ROLLBACK');
-      return bad(
-        r,409,'Оплата ещё не подтверждена'
-      );
+    let manualCreated=false;
+    if(ownItems.length){
+      const created=await client.query(`INSERT INTO skin_withdrawals(order_id,telegram_id,telegram_username,telegram_name,trade_url,items)
+        VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(order_id) DO NOTHING RETURNING id,status`,
+        [order.rows[0].id,tgUser.id,username,name,tradeUrl,JSON.stringify(ownItems)]);
+      manualCreated=created.rowCount>0;
     }
-
-    const created=await client.query(
-      `INSERT INTO skin_withdrawals(
-         order_id,
-         telegram_id,
-         telegram_username,
-         telegram_name,
-         trade_url,
-         items
-       )
-       VALUES($1,$2,$3,$4,$5,$6::jsonb)
-       ON CONFLICT(order_id) DO NOTHING
-       RETURNING id,status`,
-      [
-        order.rows[0].id,
-        tgUser.id,
-        username,
-        name,
-        tradeUrl,
-        JSON.stringify(order.rows[0].items)
-      ]
-    );
-
-    if(!created.rowCount){
-      await client.query('ROLLBACK');
-      return bad(
-        r,409,'Заявка на вывод уже создана'
-      );
-    }
-
     await client.query('COMMIT');
-    r.status(201).json(created.rows[0]);
-  }catch(e){
-    if(client){
-      try{
-        await client.query('ROLLBACK');
-      }catch{}
-    }
+    if(supplierItems.length)processBuycs2Fulfillments(order.rows[0].id).catch(e=>console.error('Async BuyCS2:',e));
+    r.status(201).json({ok:true,automaticCount:supplierItems.length,manualCount:ownItems.length,manualCreated});
+  }catch(e){if(client)try{await client.query('ROLLBACK')}catch{};console.error('Withdraw:',e);bad(r,500,'Не удалось запустить выдачу')}
+  finally{if(client)client.release()}
+});
 
-    console.error('Withdraw:',e);
-    bad(r,500,'Не удалось создать заявку');
-  }finally{
-    if(client)client.release();
-  }
+app.post('/api/orders/:id/supplier-retry',user,async(q,r)=>{
+  if(!validId(q.params.id))return bad(r,400,'Неверный заказ');
+  try{
+    const own=await pool.query(`SELECT id FROM usdt_orders WHERE id=$1 AND telegram_id=$2 AND status='paid'`,[q.params.id,q.telegramUser.id]);
+    if(!own.rowCount)return bad(r,404,'Оплаченный заказ не найден');
+    const x=await pool.query(`UPDATE supplier_fulfillments SET status='QUEUED',fail_reason=NULL,error_code=NULL,updated_at=NOW()
+      WHERE order_id=$1 AND status IN ('FAILED','CANCELLED','EXPIRED') RETURNING id`,[q.params.id]);
+    if(!x.rowCount)return bad(r,409,'Нет сделок для повторного запуска');
+    processBuycs2Fulfillments(q.params.id).catch(e=>console.error('Retry BuyCS2:',e));
+    r.json({queued:x.rowCount});
+  }catch(e){console.error('Retry supplier:',e);bad(r,500,'Не удалось повторить автодоставку')}
 });
 
 app.get('/api/admin/withdrawals',admin,async(q,r)=>{
@@ -3017,7 +3075,11 @@ app.get('/api/orders/my',user,async(q,r)=>{
         (SELECT status
          FROM skin_withdrawals w
          WHERE w.order_id=usdt_orders.id)
-         AS withdrawal_status
+         AS withdrawal_status,
+         COALESCE((SELECT jsonb_agg(jsonb_build_object(
+           'status',sf.status,'tradeId',sf.trade_id,'offerId',sf.offer_id,'failReason',sf.fail_reason,
+           'market_hash_name',sf.market_hash_name,'updatedAt',sf.updated_at) ORDER BY sf.id)
+           FROM supplier_fulfillments sf WHERE sf.order_id=usdt_orders.id),'[]'::jsonb) AS supplier_fulfillments
        FROM usdt_orders
        WHERE telegram_id=$1
        ORDER BY created_at DESC
