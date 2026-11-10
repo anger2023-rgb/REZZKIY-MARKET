@@ -288,6 +288,7 @@ async function initDb(){
     ON products(supplier_code,supplier_listing_id)
     WHERE supplier_code IS NOT NULL AND supplier_listing_id IS NOT NULL
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS products_source_type_id_idx ON products(source_type,id DESC)`);
 
   // Supplier markup: base_cost_rub is immutable wholesale baseline, never the marked-up price.
   await pool.query(`ALTER TABLE products
@@ -596,12 +597,23 @@ app.put('/api/admin/featured',admin,async(q,r)=>{
   }finally{if(client)client.release()}
 });
 
-app.get('/api/admin/supplier-products',admin,async(_q,r)=>{
+app.get('/api/admin/supplier-products',admin,async(q,r)=>{
   try{
+    const page=Math.max(1,Math.min(100000,Number.parseInt(String(q.query.page||'1'),10)||1));
+    const limit=Math.max(10,Math.min(50,Number.parseInt(String(q.query.limit||'30'),10)||30));
+    const search=String(q.query.q||'').trim().slice(0,120);
+    const offset=(page-1)*limit;
+    const params=[];
+    let where="source_type='SUPPLIER'";
+    if(search){params.push('%'+search+'%');where+=` AND (weapon ILIKE $${params.length} OR skin ILIKE $${params.length} OR (weapon || ' | ' || skin) ILIKE $${params.length})`;}
+    const count=await pool.query(`SELECT COUNT(*)::int AS total FROM products WHERE ${where}`,params);
+    params.push(limit,offset);
     const x=await pool.query(`SELECT id,weapon,skin,condition,price,quantity,image_url,
       source_type,supplier_code,supplier_listing_id,delivery_ready,created_at,base_cost_rub,markup_override
-      FROM products WHERE source_type='SUPPLIER' ORDER BY created_at DESC,id DESC`);
-    r.set('Cache-Control','no-store');r.json(x.rows);
+      FROM products WHERE ${where} ORDER BY id DESC LIMIT $${params.length-1} OFFSET $${params.length}`,params);
+    const total=Number(count.rows[0]?.total||0);
+    r.set('Cache-Control','no-store');
+    r.json({items:x.rows,total,page,limit,pages:Math.max(1,Math.ceil(total/limit)),query:search});
   }catch(e){console.error('Supplier drafts:',e);bad(r,500,'Ошибка черновиков поставщика')}
 });
 
