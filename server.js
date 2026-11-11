@@ -4,6 +4,7 @@ import pg from 'pg';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {configureTelegramStart} from './telegram-start.js';
 
 const app=express();
 const {Pool}=pg;
@@ -3159,6 +3160,8 @@ app.get('/rules',(_q,r)=>{
   r.sendFile(path.join(DIR,'rules.html'));
 });
 
+const registerTelegramStart=configureTelegramStart(app,SITE_URL);
+
 app.use(express.static(DIR));
 
 app.get('/',(_q,r)=>{
@@ -3192,6 +3195,7 @@ async function start(){
       console.log(
         'REZZKIY MARKET port '+PORT
       );
+      void registerTelegramStart?.();
     }
   );
 }
