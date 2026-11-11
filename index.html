@@ -591,8 +591,13 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
 }
 .sale-rule-list strong{color:#fff}
 .sale-rule-symbol{
- display:grid;place-items:center;width:27px;height:27px;border:1px solid #604438;
- border-radius:7px;background:#2f221e;color:#ffba89;font-size:16px;line-height:1
+ display:grid;place-items:center;width:27px;height:27px;border:1px solid #5c473e;
+ border-radius:8px;background:linear-gradient(150deg,#322720,#211d20);color:#eab18e;
+ box-shadow:inset 0 1px #f6ba9120,0 2px 4px #0003
+}
+.sale-rule-symbol svg{
+ display:block;width:17px;height:17px;fill:none;stroke:currentColor;
+ stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round
 }
 .sale-rules-consent{display:grid;gap:1px;padding:7px 0 8px;border-top:1px solid #353039}
 #sell .sale-rules-check{
@@ -661,9 +666,9 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
 <div id="sellRules" class="sale-rules">
  <h3>Правила продажи</h3>
  <ul class="sale-rule-list">
-  <li><span class="sale-rule-symbol" aria-hidden="true">◷</span><span>Выплата производится по истечении <strong>7 суток</strong> после подтверждённого получения предметов магазином.</span></li>
-  <li><span class="sale-rule-symbol" aria-hidden="true">×</span><span>При отмене или откате трейда выплата <strong>отклоняется</strong>.</span></li>
-  <li><span class="sale-rule-symbol" aria-hidden="true">◉</span><span>Инвентарь Steam должен быть <strong>публичным</strong>.</span></li>
+  <li><span class="sale-rule-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6 3h12M6 21h12M8 3v3c0 2 1.5 3.5 4 6-2.5 2.5-4 4-4 6v3m8-18v3c0 2-1.5 3.5-4 6 2.5 2.5 4 4 4 6v3M10 18h4"/></svg></span><span>Выплата производится по истечении <strong>7 суток</strong> после подтверждённого получения предметов магазином.</span></li>
+  <li><span class="sale-rule-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 3c2.4 1.7 4.8 2.7 7 3.1V11c0 4.4-2.4 7.7-7 10-4.6-2.3-7-5.6-7-10V6.1C7.2 5.7 9.6 4.7 12 3Z"/><path d="m9.8 10.2 4.4 4.4m0-4.4-4.4 4.4"/></svg></span><span>При отмене или откате трейда выплата <strong>отклоняется</strong>.</span></li>
+  <li><span class="sale-rule-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/></svg></span><span>Инвентарь Steam должен быть <strong>публичным</strong>.</span></li>
  </ul>
  <div class="sale-rules-consent">
   <label class="sale-rules-check"><input id="rulesCheckbox" type="checkbox" onchange="updateRulesButton()"><span>Я ознакомился с правилами продажи и согласен с ними</span></label>
