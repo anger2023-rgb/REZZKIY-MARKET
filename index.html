@@ -861,28 +861,50 @@ async function loadSupplierWeaponGroups(){
     const label=aliases[group.weapon]||group.weapon;
     const actions=el('div');
     actions.style.cssText='display:flex;flex-direction:column;gap:6px;min-width:0';
+    const quantity=el('input');
+    quantity.type='number';
+    quantity.min='1';
+    quantity.max=String(pending);
+    quantity.step='1';
+    quantity.inputMode='numeric';
+    quantity.placeholder='Количество';
+    quantity.setAttribute('aria-label','Количество для '+label);
+    quantity.style.margin='0';
+    quantity.disabled=supplierGroupBusy||pending===0;
+    const publishCount=makeButton('Выставить по количеству',()=>{
+     const value=quantity.valueAsNumber;
+     if(!Number.isSafeInteger(value)||value<1||value>pending)return;
+     setSupplierWeaponGroupPublication(group.weapon,true,value);
+    },'btn');
+    publishCount.disabled=true;
+    quantity.addEventListener('input',()=>{
+     const value=quantity.valueAsNumber;
+     const valid=Number.isSafeInteger(value)&&value>=1&&value<=pending;
+     publishCount.disabled=supplierGroupBusy||!valid;
+     publishCount.textContent=valid?'Выставить '+value:'Выставить по количеству';
+    });
     const publish=makeButton('Выставить все '+label,()=>setSupplierWeaponGroupPublication(group.weapon,true),'btn');
     const unpublish=makeButton('Удалить все '+label,()=>setSupplierWeaponGroupPublication(group.weapon,false),'danger');
     const count=el('small','muted','В каталоге: '+group.published+' · Можно выставить: '+pending);
     publish.disabled=supplierGroupBusy||pending===0;
     unpublish.disabled=supplierGroupBusy||Number(group.removable)===0;
-    actions.append(publish,unpublish,count);
+    actions.append(el('strong','',label),count,quantity,publishCount,publish,unpublish);
     grid.appendChild(actions);
    }
    box.appendChild(grid);
   }
  }catch(e){box.textContent='Не удалось загрузить группы: '+e.message;box.appendChild(makeButton('Повторить',loadSupplierWeaponGroups,'secondary'))}
 }
-async function setSupplierWeaponGroupPublication(weapon,published){
+async function setSupplierWeaponGroupPublication(weapon,published,count){
  if(supplierGroupBusy||!isAdmin)return;
  if(!published&&!confirm('Удалить из каталога все скины '+weapon+' от BuyCS2? Их можно будет снова выставить из списка поставщика.'))return;
  supplierGroupBusy=true;
- for(const button of $('supplierWeaponGroups').querySelectorAll('button'))button.disabled=true;
+ for(const control of $('supplierWeaponGroups').querySelectorAll('button,input'))control.disabled=true;
  const status=$('supplierGroupsStatus');
  status.textContent=(published?'Выставляем ':'Снимаем с каталога ')+weapon+'...';
  try{
   const action=published?'publish':'unpublish';
-  const result=await api('/api/admin/supplier-product-groups/'+action,{method:'PATCH',body:JSON.stringify({weapon})});
+  const result=await api('/api/admin/supplier-product-groups/'+action,{method:'PATCH',body:JSON.stringify({weapon,count})});
   status.textContent=weapon+(published?' · Выставлено: '+result.published:' · Снято с каталога: '+result.unpublished);
   await Promise.allSettled([loadProducts(),loadSupplierDrafts(supplierDraftPage)]);
  }catch(e){status.textContent='Не удалось изменить публикацию: '+e.message}
