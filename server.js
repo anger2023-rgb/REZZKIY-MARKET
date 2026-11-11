@@ -417,6 +417,7 @@ async function initDb(){
 
   await pool.query(`
     ALTER TABLE usdt_orders
+      ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'purchase' CHECK(order_kind IN ('purchase','topup')),
       ADD COLUMN IF NOT EXISTS tron_amount_units BIGINT,
       ADD COLUMN IF NOT EXISTS tron_expires_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS tron_txid TEXT,
@@ -425,6 +426,10 @@ async function initDb(){
       ADD COLUMN IF NOT EXISTS bsc_expires_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS bsc_txid TEXT,
       ADD COLUMN IF NOT EXISTS bsc_block_at TIMESTAMPTZ
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS usdt_orders_topups_user_idx
+    ON usdt_orders(telegram_id,id DESC) WHERE order_kind='topup'
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_tron_amount_unique
@@ -2196,6 +2201,7 @@ app.get('/api/admin/users',admin,async(q,r)=>{
             FROM admin_balance_credits
             WHERE telegram_id=u.telegram_id
           ),0)
+          + COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
           - COALESCE((
             SELECT SUM(amount_rub)
             FROM balance_purchases
@@ -2205,7 +2211,7 @@ app.get('/api/admin/users',admin,async(q,r)=>{
         (
           SELECT COUNT(*)
           FROM usdt_orders
-          WHERE telegram_id=u.telegram_id
+          WHERE telegram_id=u.telegram_id AND order_kind='purchase'
         )::int AS purchases,
         (
           SELECT COUNT(*)
@@ -2250,6 +2256,7 @@ app.get('/api/admin/users/:id',admin,async(q,r)=>{
                FROM admin_balance_credits
                WHERE telegram_id=u.telegram_id
              ),0)
+             + COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
              - COALESCE((
                SELECT SUM(amount_rub)
                FROM balance_purchases
@@ -2265,7 +2272,7 @@ app.get('/api/admin/users/:id',admin,async(q,r)=>{
       pool.query(
         `SELECT id,items,total_rub,status,created_at
          FROM usdt_orders
-         WHERE telegram_id=$1
+         WHERE telegram_id=$1 AND order_kind='purchase'
          ORDER BY id DESC
          LIMIT 100`,
         [q.params.id]
@@ -2366,6 +2373,8 @@ app.get('/api/balance',user,async(q,r)=>{
          UNION ALL
          SELECT telegram_id,amount_rub
          FROM admin_balance_credits
+         UNION ALL
+         SELECT telegram_id,total_rub FROM usdt_orders WHERE order_kind='topup' AND status='paid'
          UNION ALL
          SELECT telegram_id,-amount_rub
          FROM balance_purchases
@@ -2933,6 +2942,7 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     const b=await client.query(`SELECT
       COALESCE((SELECT SUM(amount_rub) FROM balance_ledger WHERE telegram_id=$1),0)
       +COALESCE((SELECT SUM(amount_rub) FROM admin_balance_credits WHERE telegram_id=$1),0)
+      +COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=$1 AND order_kind='topup' AND status='paid'),0)
       -COALESCE((SELECT SUM(amount_rub) FROM balance_purchases WHERE telegram_id=$1),0)
       AS balance`,[q.telegramUser.id]);
     const balance=Number(b.rows[0].balance);
@@ -3124,6 +3134,76 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
   }
 });
 
+app.get('/api/display-currency',async(_q,r)=>{
+  try{
+    const x=await pool.query('SELECT rate_kopecks FROM usdt_settings WHERE id=1');
+    r.set('Cache-Control','no-store').json({rateKopecks:Number(x.rows[0]?.rate_kopecks||0)});
+  }catch{
+    bad(r,500,'Не удалось загрузить курс');
+  }
+});
+
+const topupInvoiceFields=`id,order_kind,total_rub,rate_kopecks,amount_cents,network,wallet_address,
+  status,created_at,reviewed_at,tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at`;
+
+app.get('/api/balance/topups',user,async(q,r)=>{
+  const id=q.query.id;
+  if(id!==undefined&&(typeof id!=='string'||!validId(id)))return bad(r,400,'Неверный номер счёта');
+  try{
+    const x=await pool.query(`SELECT ${topupInvoiceFields} FROM usdt_orders
+      WHERE telegram_id=$1 AND order_kind='topup' AND ($2::bigint IS NULL OR id=$2)
+      ORDER BY id DESC LIMIT 30`,[q.telegramUser.id,id??null]);
+    r.set('Cache-Control','no-store').json({topups:x.rows});
+  }catch{
+    bad(r,500,'Не удалось загрузить пополнения');
+  }
+});
+
+app.post('/api/balance/topups',user,async(q,r)=>{
+  const {amountRub,network}=q.body||{};
+  if(!Number.isSafeInteger(amountRub)||amountRub<1||amountRub>1000000||
+     !['TRC20','BEP20'].includes(network)){
+    return bad(r,400,'Укажи целую сумму от 1 до 1 000 000 ₽ и сеть USDT');
+  }
+  const isTron=network==='TRC20';
+  if(isTron?!tronGridKey:!bscRpcUrl||Date.now()-bscLastHealthyAt>90000){
+    return bad(r,503,'Автопополнение в этой сети сейчас недоступно');
+  }
+  let client;
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
+    const settings=await client.query('SELECT rate_kopecks,trc20_address,bep20_address FROM usdt_settings WHERE id=1');
+    const config=settings.rows[0];
+    const rate=Number(config?.rate_kopecks);
+    const address=isTron?config?.trc20_address:config?.bep20_address?.toLowerCase();
+    if(!Number.isSafeInteger(rate)||rate<1||!validUsdtAddress(network,address)){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Кошелёк этой сети ещё не настроен');
+    }
+    const amountCents=Math.ceil(amountRub*10000/rate);
+    const exact=await allocateAutomaticAmount(client,network,address,amountCents);
+    if(!exact){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Не удалось выделить уникальную сумму USDT');
+    }
+    const x=await client.query(`INSERT INTO usdt_orders
+      (order_kind,telegram_id,items,total_rub,rate_kopecks,amount_cents,network,wallet_address,
+       tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at)
+      VALUES('topup',$1,'[]'::jsonb,$2,$3,$4,$5,$6,
+        $7::bigint,CASE WHEN $7::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,
+        $8::bigint,CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
+      RETURNING ${topupInvoiceFields}`,
+    [q.telegramUser.id,amountRub,rate,amountCents,network,address,isTron?exact:null,isTron?null:exact]);
+    await client.query('COMMIT');
+    r.status(201).json(x.rows[0]);
+  }catch(error){
+    if(client)await client.query('ROLLBACK').catch(()=>{});
+    console.error('Create balance top-up:',error.message);
+    bad(r,500,'Не удалось создать счёт на пополнение');
+  }finally{if(client)client.release()}
+});
+
 app.post('/api/orders/:id/reported',user,async(q,r)=>{
   if(!validId(q.params.id)){
     return bad(r,400,'Неверный номер счёта');
@@ -3136,7 +3216,7 @@ app.post('/api/orders/:id/reported',user,async(q,r)=>{
            reported_at=NOW()
        WHERE id=$1
          AND telegram_id=$2
-         AND status='awaiting'
+         AND status='awaiting' AND order_kind='purchase'
        RETURNING id,status,reported_at`,
       [q.params.id,q.telegramUser.id]
     );
@@ -3194,7 +3274,7 @@ app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
            tron_txid=CASE WHEN tron_amount_units IS NOT NULL AND $1='paid' THEN $4::text ELSE tron_txid END,
            bsc_txid=CASE WHEN bsc_amount_units IS NOT NULL AND $1='paid' THEN $5::text ELSE bsc_txid END
        WHERE id=$3
-         AND status='review'
+         AND status='review' AND order_kind='purchase'
          AND (tron_amount_units IS NULL OR $1<>'paid' OR $4::text IS NOT NULL)
          AND (bsc_amount_units IS NULL OR $1<>'paid' OR $5::text IS NOT NULL)
        RETURNING id,status,reviewed_at`,
@@ -3272,7 +3352,7 @@ app.post('/api/orders/:id/withdraw',user,async(q,r)=>{
   let client;
   try{
     client=await pool.connect();await client.query('BEGIN');
-    const order=await client.query(`SELECT id,telegram_id,items,status FROM usdt_orders WHERE id=$1 AND telegram_id=$2 FOR UPDATE`,[q.params.id,tgUser.id]);
+    const order=await client.query(`SELECT id,telegram_id,items,status FROM usdt_orders WHERE id=$1 AND telegram_id=$2 AND order_kind='purchase' FOR UPDATE`,[q.params.id,tgUser.id]);
     if(!order.rowCount){await client.query('ROLLBACK');return bad(r,404,'Заказ не найден')}
     if(order.rows[0].status!=='paid'){await client.query('ROLLBACK');return bad(r,409,'Оплата ещё не подтверждена')}
     const items=Array.isArray(order.rows[0].items)?order.rows[0].items:[];
@@ -3303,7 +3383,7 @@ app.post('/api/orders/:id/withdraw',user,async(q,r)=>{
 app.post('/api/orders/:id/supplier-retry',user,async(q,r)=>{
   if(!validId(q.params.id))return bad(r,400,'Неверный заказ');
   try{
-    const own=await pool.query(`SELECT id FROM usdt_orders WHERE id=$1 AND telegram_id=$2 AND status='paid'`,[q.params.id,q.telegramUser.id]);
+    const own=await pool.query(`SELECT id FROM usdt_orders WHERE id=$1 AND telegram_id=$2 AND status='paid' AND order_kind='purchase'`,[q.params.id,q.telegramUser.id]);
     if(!own.rowCount)return bad(r,404,'Оплаченный заказ не найден');
     const x=await pool.query(`UPDATE supplier_fulfillments SET status='QUEUED',fail_reason=NULL,error_code=NULL,updated_at=NOW()
       WHERE order_id=$1 AND status IN ('FAILED','CANCELLED','EXPIRED') RETURNING id`,[q.params.id]);
@@ -3474,7 +3554,7 @@ app.get('/api/orders/my',user,async(q,r)=>{
            'market_hash_name',sf.market_hash_name,'updatedAt',sf.updated_at) ORDER BY sf.id)
            FROM supplier_fulfillments sf WHERE sf.order_id=usdt_orders.id),'[]'::jsonb) AS supplier_fulfillments
        FROM usdt_orders
-       WHERE telegram_id=$1
+       WHERE telegram_id=$1 AND order_kind='purchase'
        ORDER BY created_at DESC
        LIMIT 100`,
       [q.telegramUser.id]
