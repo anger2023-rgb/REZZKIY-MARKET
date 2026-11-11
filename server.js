@@ -416,6 +416,22 @@ async function initDb(){
   `);
 
   await pool.query(`
+    ALTER TABLE usdt_orders
+      ADD COLUMN IF NOT EXISTS tron_amount_units BIGINT,
+      ADD COLUMN IF NOT EXISTS tron_expires_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS tron_txid TEXT,
+      ADD COLUMN IF NOT EXISTS tron_block_at TIMESTAMPTZ
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_tron_amount_unique
+    ON usdt_orders(wallet_address,tron_amount_units) WHERE tron_amount_units IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_tron_txid_unique
+    ON usdt_orders(tron_txid) WHERE tron_txid IS NOT NULL
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS user_carts(
       telegram_id BIGINT PRIMARY KEY,
       items JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -2472,9 +2488,113 @@ app.post('/api/admin/payouts/:id/complete',admin,async(q,r)=>{
   }
 });
 
+const tronGridKey=process.env.TRONGRID_API_KEY?.trim();
+const tronUsdtContract='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+const base58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const validTronTxid=value=>typeof value==='string'&&/^[a-f0-9]{64}$/i.test(value);
+
+function validTronAddress(address){
+  if(typeof address!=='string'||!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address))return false;
+  let value=0n;
+  for(const char of address)value=value*58n+BigInt(base58.indexOf(char));
+  const bytes=Buffer.from(value.toString(16).padStart(50,'0'),'hex');
+  if(bytes.length!==25||bytes[0]!==0x41)return false;
+  const payload=bytes.subarray(0,21);
+  const hash=crypto.createHash('sha256').update(payload).digest();
+  const checksum=crypto.createHash('sha256').update(hash).digest().subarray(0,4);
+  return bytes.subarray(21).equals(checksum);
+}
+
+async function allocateTronAmount(client,address,amountCents){
+  // Leave the whole-cent amount available to legacy invoices. Never reuse a suffix
+  // for this wallet, so a late transfer cannot pay a later order.
+  const base=BigInt(amountCents)*10000n;
+  const ceiling=base+9999n;
+  await client.query('SELECT pg_advisory_xact_lock(348286,hashtext($1))',[address]);
+  const x=await client.query(`SELECT COALESCE(MAX(tron_amount_units),$2::bigint)+1 AS units
+    FROM usdt_orders WHERE wallet_address=$1 AND tron_amount_units BETWEEN $2 AND $3`,
+  [address,base.toString(),ceiling.toString()]);
+  const units=BigInt(x.rows[0].units);
+  return units<=ceiling?units.toString():null;
+}
+
+async function tronGridRequest(endpoint,options={}){
+  const response=await fetch('https://api.trongrid.io'+endpoint,{
+    ...options,
+    headers:{'TRON-PRO-API-KEY':tronGridKey,'Content-Type':'application/json'},
+    signal:AbortSignal.timeout(10000)
+  });
+  if(!response.ok)throw Error('TronGrid HTTP '+response.status);
+  return response.json();
+}
+
+async function settleTronWallet(address,orders){
+  const pending=new Map(orders.map(order=>[order.tron_amount_units,order]));
+  const since=orders.reduce((oldest,order)=>Math.min(oldest,new Date(order.created_at).getTime()),Infinity);
+  const params=new URLSearchParams({
+    only_confirmed:'true',contract_address:tronUsdtContract,min_timestamp:String(since),limit:'200'
+  });
+  const cursors=new Set();
+  do{
+    const page=await tronGridRequest('/v1/accounts/'+encodeURIComponent(address)+'/transactions/trc20?'+params);
+    if(page.success!==true||!Array.isArray(page.data))throw Error('Invalid TronGrid transfer response');
+    for(const transfer of page.data){
+      if(transfer.type!=='Transfer'||transfer.to!==address||
+         transfer.token_info?.address!==tronUsdtContract||!validTronTxid(transfer.transaction_id)||
+         !Number.isSafeInteger(transfer.block_timestamp))continue;
+      const order=pending.get(transfer.value);
+      if(!order||transfer.block_timestamp<new Date(order.created_at).getTime()||
+         transfer.block_timestamp>new Date(order.tron_expires_at).getTime())continue;
+      const txid=transfer.transaction_id.toLowerCase();
+      const receipt=await tronGridRequest('/walletsolidity/gettransactioninfobyid',{
+        method:'POST',body:JSON.stringify({value:txid})
+      });
+      if(receipt.id!==txid||receipt.result==='FAILED'||receipt.receipt?.result!=='SUCCESS'||
+         receipt.blockTimeStamp!==transfer.block_timestamp)continue;
+      try{
+        const applied=await pool.query(`UPDATE usdt_orders
+          SET status='paid',tron_txid=$2,tron_block_at=$3,reviewed_at=NOW(),reviewed_by=NULL
+          WHERE id=$1 AND network='TRC20' AND status IN ('awaiting','review')
+            AND tron_amount_units=$4 AND wallet_address=$5
+            AND $3::timestamptz BETWEEN created_at AND tron_expires_at`,
+        [order.id,txid,new Date(transfer.block_timestamp),transfer.value,address]);
+        if(applied.rowCount)pending.delete(transfer.value);
+      }catch(error){
+        if(error.code!=='23505'||error.constraint!=='usdt_orders_tron_txid_unique')throw error;
+      }
+    }
+    const cursor=page.meta?.fingerprint;
+    if(!pending.size||!cursor||cursors.has(cursor))return;
+    cursors.add(cursor);
+    params.set('fingerprint',cursor);
+  }while(true);
+}
+
+function startTronPaymentWatcher(){
+  if(!tronGridKey)return;
+  async function tick(){
+    try{
+      const x=await pool.query(`SELECT id,wallet_address,tron_amount_units,created_at,tron_expires_at
+        FROM usdt_orders WHERE network='TRC20' AND status IN ('awaiting','review')
+          AND tron_expires_at>NOW()-INTERVAL '24 hours'`);
+      const wallets=new Map();
+      for(const order of x.rows){
+        if(!wallets.has(order.wallet_address))wallets.set(order.wallet_address,[]);
+        wallets.get(order.wallet_address).push(order);
+      }
+      for(const [address,orders] of wallets){
+        try{await settleTronWallet(address,orders)}
+        catch(error){console.error('TRC20 wallet check:',error.message)}
+      }
+    }catch(error){console.error('TRC20 order check:',error.message)}
+    finally{setTimeout(tick,30000).unref()}
+  }
+  void tick();
+}
+
 function validUsdtAddress(network,address){
   if(network==='TRC20'){
-    return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(address);
+    return address!==tronUsdtContract&&validTronAddress(address);
   }
 
   if(network==='BEP20'){
@@ -2778,6 +2898,12 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
     const amountCents=Math.ceil(
       total*10000/rate
     );
+    const autoTron=network==='TRC20'&&Boolean(tronGridKey);
+    const tronAmount=autoTron?await allocateTronAmount(client,address,amountCents):null;
+    if(autoTron&&!tronAmount){
+      await client.query('ROLLBACK');
+      return bad(r,409,'Не удалось выделить уникальную сумму TRC20');
+    }
 
     const order=await client.query(
       `INSERT INTO usdt_orders(
@@ -2787,13 +2913,16 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
          rate_kopecks,
          amount_cents,
          network,
-         wallet_address
+         wallet_address,
+         tron_amount_units,
+         tron_expires_at
        )
-       VALUES($1,$2::jsonb,$3,$4,$5,$6,$7)
+       VALUES($1,$2::jsonb,$3,$4,$5,$6,$7,$8::bigint,
+         CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
        RETURNING
          id,total_rub,rate_kopecks,
          amount_cents,network,
-         wallet_address,status,created_at`,
+         wallet_address,status,created_at,tron_amount_units,tron_expires_at`,
       [
         q.telegramUser.id,
         JSON.stringify(items),
@@ -2801,7 +2930,8 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
         rate,
         amountCents,
         network,
-        address
+        address,
+        tronAmount
       ]
     );
 
@@ -2871,6 +3001,7 @@ app.get('/api/admin/orders',admin,async(q,r)=>{
 
 app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
   const status=q.body?.status;
+  const txid=validTronTxid(q.body?.txid)?q.body.txid.toLowerCase():null;
 
   if(
     !validId(q.params.id)||
@@ -2885,23 +3016,29 @@ app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
       `UPDATE usdt_orders
        SET status=$1,
            reviewed_at=NOW(),
-           reviewed_by=$2
+           reviewed_by=$2,
+           tron_txid=CASE WHEN tron_amount_units IS NOT NULL AND $1='paid' THEN $4::text ELSE tron_txid END
        WHERE id=$3
          AND status='review'
+         AND (tron_amount_units IS NULL OR $1<>'paid' OR $4::text IS NOT NULL)
        RETURNING id,status,reviewed_at`,
       [
         status,
         q.admin.id,
-        q.params.id
+        q.params.id,
+        txid
       ]
     );
 
     if(!x.rowCount){
-      return bad(r,409,'Платёж уже обработан');
+      return bad(r,409,txid?'Платёж уже обработан':'Платёж уже обработан или требуется хеш перевода TRC20');
     }
 
     r.json(x.rows[0]);
   }catch(e){
+    if(e.code==='23505'&&e.constraint==='usdt_orders_tron_txid_unique'){
+      return bad(r,409,'Этот перевод TRC20 уже использован');
+    }
     console.error('Review USDT payment:',e);
     bad(r,500,'Ошибка подтверждения платежа');
   }
@@ -3145,6 +3282,8 @@ app.get('/api/orders/my',user,async(q,r)=>{
         wallet_address,
         status,
         created_at,
+        tron_amount_units,
+        tron_expires_at,
         reported_at,
         reviewed_at,
         (SELECT status
@@ -3216,6 +3355,7 @@ async function start(){
       console.log(
         'REZZKIY MARKET port '+PORT
       );
+      startTronPaymentWatcher();
     }
   );
 }
