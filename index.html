@@ -1245,7 +1245,13 @@ const englishCopy={
  "Неверный хеш перевода TRC20": "Invalid TRC20 transaction hash",
  "Не удалось выделить уникальную сумму TRC20": "Could not allocate a unique TRC20 amount",
  "Платёж уже обработан или требуется хеш перевода TRC20": "Payment already processed or the TRC20 transaction hash is required",
- "Этот перевод TRC20 уже использован": "This TRC20 transfer has already been used"
+ "Этот перевод TRC20 уже использован": "This TRC20 transfer has already been used",
+ "Проверка BEP20 временно недоступна. Попробуй позже или выбери TRC20.": "BEP20 verification is temporarily unavailable. Try again later or choose TRC20.",
+ "Не удалось выделить уникальную сумму USDT": "Could not allocate a unique USDT amount",
+ "Платёж уже обработан или требуется хеш перевода в правильной сети": "Payment already processed or a transaction hash for the correct network is required",
+ "Этот перевод уже использован": "This transfer has already been used",
+ "Вставь хеш проверенного перевода": "Paste the verified transaction hash",
+ "Неверный хеш перевода для выбранной сети": "Invalid transaction hash for the selected network"
 };
 const LANGUAGE_STORAGE_KEY='rezzkiy_market_language';
 let uiLanguage='ru';
@@ -1622,11 +1628,13 @@ async function payWithBalance(){
 }
 const usdtAmount=x=>(Number(x)/100).toFixed(2);
 function invoiceUsdtAmount(order){
- if(order.tron_amount_units==null)return usdtAmount(order.amount_cents);
- const units=BigInt(order.tron_amount_units);
+ const exact=order.tron_amount_units??order.bsc_amount_units;
+ if(exact==null)return usdtAmount(order.amount_cents);
+ const units=BigInt(exact);
  return String(units/1000000n)+'.'+String(units%1000000n).padStart(6,'0');
 }
-const isTronInvoiceExpired=order=>order.tron_expires_at&&Date.parse(order.tron_expires_at)<=Date.now();
+const invoiceExpiry=order=>order.tron_expires_at??order.bsc_expires_at;
+const isInvoiceExpired=order=>Boolean(invoiceExpiry(order)&&Date.parse(invoiceExpiry(order))<=Date.now());
 async function copyUsdt(value){try{await navigator.clipboard.writeText(String(value));uiAlert('Скопировано')}catch{uiAlert('Не удалось скопировать автоматически. Удерживай текст для копирования.')}}
 let lastUsdtOrder=null;
 let cartSaveQueue=Promise.resolve();
@@ -1748,7 +1756,7 @@ async function loadMyOrders(){
   const labels={awaiting:'Ожидает оплаты',review:'Проверяется администратором',paid:'Оплата подтверждена',rejected:'Оплата отклонена'};
   for(const o of orders){
    const item=el('div','item');
-   const statusText=o.status==='awaiting'&&isTronInvoiceExpired(o)?'Срок счёта истёк':labels[o.status]||o.status;
+   const statusText=o.status==='awaiting'&&isInvoiceExpired(o)?'Срок счёта истёк':labels[o.status]||o.status;
    item.append(el('strong','','Заказ №'+o.id),el('p','muted',statusText),
      el('p','',money(o.total_rub)+(o.network==='BALANCE'?' · Оплачено с баланса':' · '+invoiceUsdtAmount(o)+' USDT · '+o.network)),
      el('p','muted',(o.items||[]).map(x=>x.weapon+' | '+x.skin).join(', ')));
@@ -1777,8 +1785,8 @@ function showUsdtOrder(o){
  if(!paidOrderStates.has(String(o.id)))paidOrderStates.set(String(o.id),o.status);
  const box=$('usdtInvoice');box.replaceChildren();
  const w=el('div','usdt-box');
- const isAuto=o.tron_amount_units!=null;
- const expired=isTronInvoiceExpired(o);
+ const isAuto=Boolean(invoiceExpiry(o));
+ const expired=isInvoiceExpired(o);
  box.dataset.expired=String(Boolean(expired));
  w.append(el('h3','','Счёт №'+o.id),el('p','muted','Сеть: '+o.network));
  if(o.status==='paid'||o.status==='rejected'){
@@ -1801,7 +1809,7 @@ function showUsdtOrder(o){
   w.appendChild(el('p','muted',expired
    ?'Срок счёта истёк. Если ты уже отправил USDT, дождись подтверждения или отправь счёт на ручную проверку.'
    :'Переведи точную сумму без округления. Оплата подтвердится автоматически.'));
-  if(!expired)w.appendChild(el('p','muted','Оплатить до: '+new Date(o.tron_expires_at).toLocaleString(uiLanguage==='en'?'en-GB':'ru-RU')));
+  if(!expired)w.appendChild(el('p','muted','Оплатить до: '+new Date(invoiceExpiry(o)).toLocaleString(uiLanguage==='en'?'en-GB':'ru-RU')));
  }
  const btn=makeButton(isAuto?'Запросить ручную проверку':'Я оплатил',async()=>{
   if(!uiConfirm('Подтвердить, что перевод действительно отправлен?'))return;
@@ -1837,17 +1845,19 @@ async function loadUsdtOrders(){
   for(const o of orders){
    const w=el('div','usdt-box');
    w.append(el('h3','','Заказ №'+o.id),el('p','muted','Покупатель: '+o.telegram_id),el('p','muted',o.network+' · '+invoiceUsdtAmount(o)+' USDT'),el('p','muted','Статус: '+o.status));
-   if(o.tron_txid)w.appendChild(el('p','usdt-value','TXID: '+o.tron_txid));
+   const txHash=o.tron_txid??o.bsc_txid;
+   if(txHash)w.appendChild(el('p','usdt-value','TXID: '+txHash));
    if(o.status==='review'){
     w.appendChild(el('p','muted','Проверь фактическое поступление USDT в блокчейне и на кошельке.'));
     for(const [status,label] of [['paid','Подтвердить оплату'],['rejected','Отклонить']]){
      const btn=makeButton(label,async()=>{
       if(!uiConfirm(label+' по заказу №'+o.id+'?'))return;
       let txid;
-      if(status==='paid'&&o.tron_amount_units!=null){
-       txid=uiPrompt('Вставь хеш проверенного перевода TRC20')?.trim();
+      if(status==='paid'&&invoiceExpiry(o)){
+       txid=uiPrompt('Вставь хеш проверенного перевода')?.trim();
        if(!txid)return;
-       if(!/^[a-f0-9]{64}$/i.test(txid))return uiAlert('Неверный хеш перевода TRC20');
+       const txPattern=o.network==='BEP20'?/^0x[a-f0-9]{64}$/i:/^[a-f0-9]{64}$/i;
+       if(!txPattern.test(txid))return uiAlert('Неверный хеш перевода для выбранной сети');
       }
       btn.disabled=true;
       try{await api('/api/admin/orders/'+o.id+'/review',{method:'POST',body:JSON.stringify({status,confirmed:true,txid})});await loadUsdtOrders()}
@@ -2179,7 +2189,7 @@ async function checkPaidPurchases(){
    paidOrderStates.set(id,order.status);
    const invoice=$('usdtInvoice');
    if($('paymentOverlay').style.display==='flex'&&invoice.childElementCount&&String(lastUsdtOrder?.id)===id&&
-      (lastUsdtOrder.status!==order.status||invoice.dataset.expired!==String(Boolean(isTronInvoiceExpired(order))))){
+      (lastUsdtOrder.status!==order.status||invoice.dataset.expired!==String(Boolean(isInvoiceExpired(order))))){
     showUsdtOrder(order);
    }
    if(order.status!=='paid')continue;
