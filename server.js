@@ -428,6 +428,20 @@ async function initDb(){
       ADD COLUMN IF NOT EXISTS bsc_block_at TIMESTAMPTZ
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS market_promo_codes(
+      id BIGSERIAL PRIMARY KEY,
+      code TEXT UNIQUE NOT NULL,
+      topup_bps INTEGER NOT NULL CHECK(topup_bps BETWEEN 0 AND 10000),
+      discount_bps INTEGER NOT NULL CHECK(discount_bps BETWEEN 0 AND 9999),
+      CHECK(topup_bps>0 OR discount_bps>0)
+    );
+    ALTER TABLE usdt_orders
+      ADD COLUMN IF NOT EXISTS promo_code_id BIGINT REFERENCES market_promo_codes(id),
+      ADD COLUMN IF NOT EXISTS promo_rub INTEGER NOT NULL DEFAULT 0 CHECK(promo_rub>=0);
+    CREATE INDEX IF NOT EXISTS usdt_orders_paid_promo_idx
+      ON usdt_orders(promo_code_id,telegram_id) WHERE status='paid' AND promo_code_id IS NOT NULL
+  `);
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS usdt_orders_topups_user_idx
     ON usdt_orders(telegram_id,id DESC) WHERE order_kind='topup'
   `);
@@ -2201,7 +2215,7 @@ app.get('/api/admin/users',admin,async(q,r)=>{
             FROM admin_balance_credits
             WHERE telegram_id=u.telegram_id
           ),0)
-          + COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
+          + COALESCE((SELECT SUM(total_rub + promo_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
           - COALESCE((
             SELECT SUM(amount_rub)
             FROM balance_purchases
@@ -2256,7 +2270,7 @@ app.get('/api/admin/users/:id',admin,async(q,r)=>{
                FROM admin_balance_credits
                WHERE telegram_id=u.telegram_id
              ),0)
-             + COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
+             + COALESCE((SELECT SUM(total_rub + promo_rub) FROM usdt_orders WHERE telegram_id=u.telegram_id AND order_kind='topup' AND status='paid'),0)
              - COALESCE((
                SELECT SUM(amount_rub)
                FROM balance_purchases
@@ -2374,7 +2388,7 @@ app.get('/api/balance',user,async(q,r)=>{
          SELECT telegram_id,amount_rub
          FROM admin_balance_credits
          UNION ALL
-         SELECT telegram_id,total_rub FROM usdt_orders WHERE order_kind='topup' AND status='paid'
+         SELECT telegram_id,total_rub + promo_rub FROM usdt_orders WHERE order_kind='topup' AND status='paid'
          UNION ALL
          SELECT telegram_id,-amount_rub
          FROM balance_purchases
@@ -2910,8 +2924,110 @@ app.post('/api/buycs2/webhook',async(q,r)=>{
   }catch(e){console.error('BuyCS2 webhook:',e);r.sendStatus(500)}
 });
 
+function normalizePromoCode(raw){
+  return typeof raw==='string'?raw.normalize('NFKC').trim().replace(/\s+/gu,' ').toUpperCase():'';
+}
+
+function validPromoCode(code){
+  return /^[\p{L}\p{N}][\p{L}\p{N} _-]{1,31}$/u.test(code);
+}
+
+function promoError(message){
+  return Object.assign(new Error(message),{promoError:true});
+}
+
+async function calculatePromo(db,raw,kind,baseRub){
+  if(raw==null||raw==='')return {id:null,adjustmentRub:0,baseRub,finalRub:baseRub};
+  const code=normalizePromoCode(raw);
+  if(!validPromoCode(code))throw promoError('Проверь написание промокода');
+  const {rows:[promo]}=await db.query(
+    'SELECT id,topup_bps,discount_bps FROM market_promo_codes WHERE code=$1',[code]
+  );
+  if(!promo)throw promoError('Промокод не найден');
+  const bps=kind==='topup'?promo.topup_bps:promo.discount_bps;
+  if(!bps)throw promoError('Этот промокод не действует для выбранной операции');
+  const adjustmentRub=Math.floor(baseRub*bps/10000);
+  if(!adjustmentRub)throw promoError('Сумма слишком мала для этого промокода');
+  const finalRub=kind==='topup'?baseRub+adjustmentRub:baseRub-adjustmentRub;
+  return {id:promo.id,code,bps,adjustmentRub,baseRub,finalRub};
+}
+
+async function paymentPromo(db,body,kind,baseRub){
+  const promo=await calculatePromo(db,body?.promoCode,kind,baseRub);
+  if(promo.id&&(body.promoBaseRub!==baseRub||body.promoFinalRub!==promo.finalRub)){
+    throw promoError('Сумма изменилась. Примени промокод ещё раз.');
+  }
+  return promo;
+}
+
+app.post('/api/promos/quote',user,async(q,r)=>{
+  const {kind,code,amountRub,productIds}=q.body||{};
+  try{
+    let baseRub=amountRub;
+    if(kind==='purchase'){
+      if(!Array.isArray(productIds)||!productIds.length||productIds.length>50||
+         productIds.some(id=>!validId(id))||new Set(productIds.map(String)).size!==productIds.length){
+        return bad(r,400,'Проверь выбранные товары');
+      }
+      const {rows}=await pool.query('SELECT price FROM products WHERE id=ANY($1::bigint[]) AND quantity>0',[productIds]);
+      if(rows.length!==productIds.length)return bad(r,409,'Некоторые товары уже недоступны');
+      baseRub=rows.reduce((total,row)=>total+Number(row.price),0);
+    }else if(kind!=='topup'){
+      return bad(r,400,'Неизвестная операция');
+    }
+    const max=kind==='topup'?1000000:2147483647;
+    if(!Number.isSafeInteger(baseRub)||baseRub<1||baseRub>max)return bad(r,400,'Проверь сумму');
+    if(!validPromoCode(normalizePromoCode(code)))return bad(r,400,'Введи промокод');
+    const {id,...quote}=await calculatePromo(pool,code,kind,baseRub);
+    r.json(quote);
+  }catch(e){
+    if(e.promoError)return bad(r,400,e.message);
+    console.error('Promo quote:',e);
+    bad(r,500,'Не удалось проверить промокод');
+  }
+});
+
+app.get('/api/admin/promos',admin,async(_q,r)=>{
+  try{
+    const {rows}=await pool.query(`
+      SELECT p.*,COUNT(DISTINCT o.telegram_id) AS users
+      FROM market_promo_codes p
+      LEFT JOIN usdt_orders o ON o.promo_code_id=p.id AND o.status='paid'
+      GROUP BY p.id ORDER BY p.id DESC
+    `);
+    r.set('Cache-Control','no-store').json(rows);
+  }catch(e){
+    console.error('List promos:',e);
+    bad(r,500,'Не удалось загрузить промокоды');
+  }
+});
+
+app.post('/api/admin/promos',admin,async(q,r)=>{
+  const {code:raw,topupBps,discountBps}=q.body||{};
+  const code=normalizePromoCode(raw);
+  if(!validPromoCode(code))return bad(r,400,'Укажи код из 2–32 символов: буквы, цифры, пробел, дефис или подчёркивание');
+  if(!Number.isInteger(topupBps)||topupBps<0||topupBps>10000||
+     !Number.isInteger(discountBps)||discountBps<0||discountBps>9999||!(topupBps||discountBps)){
+    return bad(r,400,'Укажи бонус до 100% или скидку до 99,99%. Хотя бы один процент должен быть больше нуля.');
+  }
+  try{
+    const {rows:[promo]}=await pool.query(`
+      INSERT INTO market_promo_codes(code,topup_bps,discount_bps) VALUES($1,$2,$3)
+      ON CONFLICT(code) DO NOTHING RETURNING *
+    `,[code,topupBps,discountBps]);
+    if(!promo)return bad(r,409,'Такой промокод уже существует');
+    r.status(201).json({...promo,users:0});
+  }catch(e){
+    console.error('Create promo:',e);
+    bad(r,500,'Не удалось создать промокод');
+  }
+});
+
 /* Atomic balance checkout: authenticated user, locked products and per-user ledger. */
 app.post('/api/orders/balance',user,async(q,r)=>{
+  if(q.body?.promoCode!=null&&q.body.promoCode!==''){
+    return bad(r,400,'При оплате с баланса промокод недоступен');
+  }
   const ids=q.body?.productIds;
   if(!Array.isArray(ids)||ids.length<1||ids.length>50||
      ids.some(id=>!validId(id))||new Set(ids.map(String)).size!==ids.length){
@@ -2942,7 +3058,7 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     const b=await client.query(`SELECT
       COALESCE((SELECT SUM(amount_rub) FROM balance_ledger WHERE telegram_id=$1),0)
       +COALESCE((SELECT SUM(amount_rub) FROM admin_balance_credits WHERE telegram_id=$1),0)
-      +COALESCE((SELECT SUM(total_rub) FROM usdt_orders WHERE telegram_id=$1 AND order_kind='topup' AND status='paid'),0)
+      +COALESCE((SELECT SUM(total_rub + promo_rub) FROM usdt_orders WHERE telegram_id=$1 AND order_kind='topup' AND status='paid'),0)
       -COALESCE((SELECT SUM(amount_rub) FROM balance_purchases WHERE telegram_id=$1),0)
       AS balance`,[q.telegramUser.id]);
     const balance=Number(b.rows[0].balance);
@@ -3056,16 +3172,16 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       };
     });
 
-    const total=items.reduce(
+    const baseRub=items.reduce(
       (sum,item)=>sum+Number(item.price),0
     );
 
     const rate=Number(config.rate_kopecks);
 
     if(
-      !Number.isSafeInteger(total)||
-      total<1||
-      total>2147483647||
+      !Number.isSafeInteger(baseRub)||
+      baseRub<1||
+      baseRub>2147483647||
       !Number.isSafeInteger(rate)||
       rate<1
     ){
@@ -3073,6 +3189,8 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       return bad(r,400,'Неверная сумма заказа');
     }
 
+    const promo=await paymentPromo(client,q.body,'purchase',baseRub);
+    const total=promo.finalRub;
     const amountCents=Math.ceil(
       total*10000/rate
     );
@@ -3096,11 +3214,12 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
          tron_amount_units,
          tron_expires_at,
          bsc_amount_units,
-         bsc_expires_at
+         bsc_expires_at,
+         promo_code_id,promo_rub
        )
        VALUES($1,$2::jsonb,$3,$4,$5,$6,$7,$8::bigint,
          CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,
-         $9::bigint,CASE WHEN $9::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
+         $9::bigint,CASE WHEN $9::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,$10,$11)
        RETURNING
          id,total_rub,rate_kopecks,
          amount_cents,network,
@@ -3114,7 +3233,8 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
         network,
         address,
         autoTron?exactAmount:null,
-        autoBsc?exactAmount:null
+        autoBsc?exactAmount:null,
+        promo.id,promo.adjustmentRub
       ]
     );
 
@@ -3127,6 +3247,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       }catch{}
     }
 
+    if(e.promoError)return bad(r,409,e.message);
     console.error('Create USDT order:',e);
     bad(r,500,'Не удалось создать счёт');
   }finally{
@@ -3143,7 +3264,7 @@ app.get('/api/display-currency',async(_q,r)=>{
   }
 });
 
-const topupInvoiceFields=`id,order_kind,total_rub,rate_kopecks,amount_cents,network,wallet_address,
+const topupInvoiceFields=`id,order_kind,total_rub,promo_rub,rate_kopecks,amount_cents,network,wallet_address,
   status,created_at,reviewed_at,tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at`;
 
 app.get('/api/balance/topups',user,async(q,r)=>{
@@ -3181,6 +3302,7 @@ app.post('/api/balance/topups',user,async(q,r)=>{
       await client.query('ROLLBACK');
       return bad(r,409,'Кошелёк этой сети ещё не настроен');
     }
+    const promo=await paymentPromo(client,q.body,'topup',amountRub);
     const amountCents=Math.ceil(amountRub*10000/rate);
     const exact=await allocateAutomaticAmount(client,network,address,amountCents);
     if(!exact){
@@ -3189,16 +3311,17 @@ app.post('/api/balance/topups',user,async(q,r)=>{
     }
     const x=await client.query(`INSERT INTO usdt_orders
       (order_kind,telegram_id,items,total_rub,rate_kopecks,amount_cents,network,wallet_address,
-       tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at)
+       tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at,promo_code_id,promo_rub)
       VALUES('topup',$1,'[]'::jsonb,$2,$3,$4,$5,$6,
         $7::bigint,CASE WHEN $7::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,
-        $8::bigint,CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
+        $8::bigint,CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,$9,$10)
       RETURNING ${topupInvoiceFields}`,
-    [q.telegramUser.id,amountRub,rate,amountCents,network,address,isTron?exact:null,isTron?null:exact]);
+    [q.telegramUser.id,amountRub,rate,amountCents,network,address,isTron?exact:null,isTron?null:exact,promo.id,promo.adjustmentRub]);
     await client.query('COMMIT');
     r.status(201).json(x.rows[0]);
   }catch(error){
     if(client)await client.query('ROLLBACK').catch(()=>{});
+    if(error.promoError)return bad(r,409,error.message);
     console.error('Create balance top-up:',error.message);
     bad(r,500,'Не удалось создать счёт на пополнение');
   }finally{if(client)client.release()}
