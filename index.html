@@ -1235,7 +1235,17 @@ const englishCopy={
  "Не удалось сохранить корзину": "Could not save the cart",
  "Не удалось загрузить историю заказов": "Could not load order history",
  "Язык": "Language",
- "Выбрать язык": "Choose language"
+ "Выбрать язык": "Choose language",
+ "Срок счёта истёк": "Invoice expired",
+ "Срок счёта истёк. Если ты уже отправил USDT, дождись подтверждения или отправь счёт на ручную проверку.": "This invoice expired. If you already sent USDT, wait for confirmation or request manual review.",
+ "Переведи точную сумму без округления. Оплата подтвердится автоматически.": "Send the exact amount without rounding. Payment is confirmed automatically.",
+ "Оплатить до: ": "Pay by: ",
+ "Запросить ручную проверку": "Request manual review",
+ "Вставь хеш проверенного перевода TRC20": "Paste the verified TRC20 transaction hash",
+ "Неверный хеш перевода TRC20": "Invalid TRC20 transaction hash",
+ "Не удалось выделить уникальную сумму TRC20": "Could not allocate a unique TRC20 amount",
+ "Платёж уже обработан или требуется хеш перевода TRC20": "Payment already processed or the TRC20 transaction hash is required",
+ "Этот перевод TRC20 уже использован": "This TRC20 transfer has already been used"
 };
 const LANGUAGE_STORAGE_KEY='rezzkiy_market_language';
 let uiLanguage='ru';
@@ -1611,6 +1621,12 @@ async function payWithBalance(){
  finally{balancePaymentBusy=false;if(button)button.disabled=false}
 }
 const usdtAmount=x=>(Number(x)/100).toFixed(2);
+function invoiceUsdtAmount(order){
+ if(order.tron_amount_units==null)return usdtAmount(order.amount_cents);
+ const units=BigInt(order.tron_amount_units);
+ return String(units/1000000n)+'.'+String(units%1000000n).padStart(6,'0');
+}
+const isTronInvoiceExpired=order=>order.tron_expires_at&&Date.parse(order.tron_expires_at)<=Date.now();
 async function copyUsdt(value){try{await navigator.clipboard.writeText(String(value));uiAlert('Скопировано')}catch{uiAlert('Не удалось скопировать автоматически. Удерживай текст для копирования.')}}
 let lastUsdtOrder=null;
 let cartSaveQueue=Promise.resolve();
@@ -1732,8 +1748,9 @@ async function loadMyOrders(){
   const labels={awaiting:'Ожидает оплаты',review:'Проверяется администратором',paid:'Оплата подтверждена',rejected:'Оплата отклонена'};
   for(const o of orders){
    const item=el('div','item');
-   item.append(el('strong','','Заказ №'+o.id),el('p','muted',labels[o.status]||o.status),
-     el('p','',money(o.total_rub)+(o.network==='BALANCE'?' · Оплачено с баланса':' · '+usdtAmount(o.amount_cents)+' USDT · '+o.network)),
+   const statusText=o.status==='awaiting'&&isTronInvoiceExpired(o)?'Срок счёта истёк':labels[o.status]||o.status;
+   item.append(el('strong','','Заказ №'+o.id),el('p','muted',statusText),
+     el('p','',money(o.total_rub)+(o.network==='BALANCE'?' · Оплачено с баланса':' · '+invoiceUsdtAmount(o)+' USDT · '+o.network)),
      el('p','muted',(o.items||[]).map(x=>x.weapon+' | '+x.skin).join(', ')));
    if(o.status==='awaiting'||o.status==='review')item.appendChild(makeButton('Открыть счёт',()=>{lastUsdtOrder=o;checkoutOrder(o)},'secondary full'));
    if(o.status==='paid'){
@@ -1756,19 +1773,42 @@ function checkoutOrder(o){
 }
 
 function showUsdtOrder(o){
+ lastUsdtOrder=o;
+ if(!paidOrderStates.has(String(o.id)))paidOrderStates.set(String(o.id),o.status);
  const box=$('usdtInvoice');box.replaceChildren();
  const w=el('div','usdt-box');
- w.append(el('h3','','Счёт №'+o.id),el('p','muted','Сеть: '+o.network),el('p','muted','Точная сумма USDT'),el('div','usdt-value',usdtAmount(o.amount_cents)));
- w.appendChild(makeButton('Копировать сумму',()=>copyUsdt(usdtAmount(o.amount_cents)),'secondary full'));
- w.append(el('p','muted','Адрес получателя'),el('div','usdt-value',o.wallet_address));
- w.appendChild(makeButton('Копировать адрес',()=>copyUsdt(o.wallet_address),'secondary full'));
- w.appendChild(el('p','muted','Переводи только USDT в указанной сети. Комиссия сети оплачивается отдельно.'));
- const btn=makeButton('Я оплатил',async()=>{
+ const isAuto=o.tron_amount_units!=null;
+ const expired=isTronInvoiceExpired(o);
+ box.dataset.expired=String(Boolean(expired));
+ w.append(el('h3','','Счёт №'+o.id),el('p','muted','Сеть: '+o.network));
+ if(o.status==='paid'||o.status==='rejected'){
+  w.appendChild(el('p','muted',o.status==='paid'?'Оплата подтверждена':'Оплата отклонена'));
+  if(o.status==='paid')w.appendChild(makeButton('Получить купленные скины',()=>{
+   closePayment();go('profile');openProfileSection('withdrawals');
+  },'btn full'));
+  box.appendChild(w);
+  return;
+ }
+ if(!expired){
+  const exactAmount=invoiceUsdtAmount(o);
+  w.append(el('p','muted','Точная сумма USDT'),el('div','usdt-value',exactAmount));
+  w.appendChild(makeButton('Копировать сумму',()=>copyUsdt(exactAmount),'secondary full'));
+  w.append(el('p','muted','Адрес получателя'),el('div','usdt-value',o.wallet_address));
+  w.appendChild(makeButton('Копировать адрес',()=>copyUsdt(o.wallet_address),'secondary full'));
+  w.appendChild(el('p','muted','Переводи только USDT в указанной сети. Комиссия сети оплачивается отдельно.'));
+ }
+ if(isAuto){
+  w.appendChild(el('p','muted',expired
+   ?'Срок счёта истёк. Если ты уже отправил USDT, дождись подтверждения или отправь счёт на ручную проверку.'
+   :'Переведи точную сумму без округления. Оплата подтвердится автоматически.'));
+  if(!expired)w.appendChild(el('p','muted','Оплатить до: '+new Date(o.tron_expires_at).toLocaleString(uiLanguage==='en'?'en-GB':'ru-RU')));
+ }
+ const btn=makeButton(isAuto?'Запросить ручную проверку':'Я оплатил',async()=>{
   if(!uiConfirm('Подтвердить, что перевод действительно отправлен?'))return;
   btn.disabled=true;
   try{await api('/api/orders/'+o.id+'/reported',{method:'POST'});o.status='review';btn.textContent='Ожидает проверки администратора';await loadMyOrders()}catch(e){uiAlert(e.message);btn.disabled=false}
- },'btn full');
- if(o.status!=='awaiting'){btn.disabled=true;btn.textContent='Статус: '+o.status}
+ },isAuto?'secondary full':'btn full');
+ if(o.status!=='awaiting'){btn.disabled=true;btn.textContent='Ожидает проверки администратора'}
  w.appendChild(btn);box.appendChild(w);
 }
 async function createUsdtOrder(){
@@ -1796,14 +1836,21 @@ async function loadUsdtOrders(){
   if(!orders.length){box.textContent='Заказов нет';return}
   for(const o of orders){
    const w=el('div','usdt-box');
-   w.append(el('h3','','Заказ №'+o.id),el('p','muted','Покупатель: '+o.telegram_id),el('p','muted',o.network+' · '+usdtAmount(o.amount_cents)+' USDT'),el('p','muted','Статус: '+o.status));
+   w.append(el('h3','','Заказ №'+o.id),el('p','muted','Покупатель: '+o.telegram_id),el('p','muted',o.network+' · '+invoiceUsdtAmount(o)+' USDT'),el('p','muted','Статус: '+o.status));
+   if(o.tron_txid)w.appendChild(el('p','usdt-value','TXID: '+o.tron_txid));
    if(o.status==='review'){
     w.appendChild(el('p','muted','Проверь фактическое поступление USDT в блокчейне и на кошельке.'));
     for(const [status,label] of [['paid','Подтвердить оплату'],['rejected','Отклонить']]){
      const btn=makeButton(label,async()=>{
       if(!uiConfirm(label+' по заказу №'+o.id+'?'))return;
+      let txid;
+      if(status==='paid'&&o.tron_amount_units!=null){
+       txid=uiPrompt('Вставь хеш проверенного перевода TRC20')?.trim();
+       if(!txid)return;
+       if(!/^[a-f0-9]{64}$/i.test(txid))return uiAlert('Неверный хеш перевода TRC20');
+      }
       btn.disabled=true;
-      try{await api('/api/admin/orders/'+o.id+'/review',{method:'POST',body:JSON.stringify({status,confirmed:true})});await loadUsdtOrders()}
+      try{await api('/api/admin/orders/'+o.id+'/review',{method:'POST',body:JSON.stringify({status,confirmed:true,txid})});await loadUsdtOrders()}
       catch(e){uiAlert(e.message);btn.disabled=false}
      },status==='paid'?'btn full':'secondary full');w.appendChild(btn);
     }
@@ -2119,8 +2166,10 @@ async function checkPaidPurchases(){
   // Первая загрузка — базовая точка. Уже оплаченные заказы не всплывают.
   if(!paidOrdersInitialized){
    for(const order of orders){
-    paidOrderStates.set(String(order.id),order.status);
-    if(order.status==='paid')markPaidTradeSeen(order.id);
+    if(!paidOrderStates.has(String(order.id))){
+     paidOrderStates.set(String(order.id),order.status);
+     if(order.status==='paid')markPaidTradeSeen(order.id);
+    }
    }
    paidOrdersInitialized=true;
   }
@@ -2128,6 +2177,11 @@ async function checkPaidPurchases(){
    const id=String(order.id);
    const previous=paidOrderStates.get(id);
    paidOrderStates.set(id,order.status);
+   const invoice=$('usdtInvoice');
+   if($('paymentOverlay').style.display==='flex'&&invoice.childElementCount&&String(lastUsdtOrder?.id)===id&&
+      (lastUsdtOrder.status!==order.status||invoice.dataset.expired!==String(Boolean(isTronInvoiceExpired(order))))){
+    showUsdtOrder(order);
+   }
    if(order.status!=='paid')continue;
    const key='rezz_paid_cart_cleared_'+String(tg?.initDataUnsafe?.user?.id||'unknown')+'_'+id;
    let cleared=false;
