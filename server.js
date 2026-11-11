@@ -420,7 +420,11 @@ async function initDb(){
       ADD COLUMN IF NOT EXISTS tron_amount_units BIGINT,
       ADD COLUMN IF NOT EXISTS tron_expires_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS tron_txid TEXT,
-      ADD COLUMN IF NOT EXISTS tron_block_at TIMESTAMPTZ
+      ADD COLUMN IF NOT EXISTS tron_block_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS bsc_amount_units BIGINT,
+      ADD COLUMN IF NOT EXISTS bsc_expires_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS bsc_txid TEXT,
+      ADD COLUMN IF NOT EXISTS bsc_block_at TIMESTAMPTZ
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_tron_amount_unique
@@ -429,6 +433,20 @@ async function initDb(){
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_tron_txid_unique
     ON usdt_orders(tron_txid) WHERE tron_txid IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_bsc_amount_unique
+    ON usdt_orders(LOWER(wallet_address),bsc_amount_units) WHERE bsc_amount_units IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS usdt_orders_bsc_txid_unique
+    ON usdt_orders(bsc_txid) WHERE bsc_txid IS NOT NULL
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bsc_payment_cursors(
+      wallet_address TEXT PRIMARY KEY,
+      next_block BIGINT NOT NULL
+    )
   `);
 
   await pool.query(`
@@ -2505,14 +2523,17 @@ function validTronAddress(address){
   return bytes.subarray(21).equals(checksum);
 }
 
-async function allocateTronAmount(client,address,amountCents){
+async function allocateAutomaticAmount(client,network,address,amountCents){
   // Leave the whole-cent amount available to legacy invoices. Never reuse a suffix
   // for this wallet, so a late transfer cannot pay a later order.
   const base=BigInt(amountCents)*10000n;
   const ceiling=base+9999n;
+  const isTron=network==='TRC20';
+  const amountColumn=isTron?'tron_amount_units':'bsc_amount_units';
+  const walletColumn=isTron?'wallet_address':'LOWER(wallet_address)';
   await client.query('SELECT pg_advisory_xact_lock(348286,hashtext($1))',[address]);
-  const x=await client.query(`SELECT COALESCE(MAX(tron_amount_units),$2::bigint)+1 AS units
-    FROM usdt_orders WHERE wallet_address=$1 AND tron_amount_units BETWEEN $2 AND $3`,
+  const x=await client.query(`SELECT COALESCE(MAX(${amountColumn}),$2::bigint)+1 AS units
+    FROM usdt_orders WHERE ${walletColumn}=$1 AND ${amountColumn} BETWEEN $2 AND $3`,
   [address,base.toString(),ceiling.toString()]);
   const units=BigInt(x.rows[0].units);
   return units<=ceiling?units.toString():null;
@@ -2592,13 +2613,156 @@ function startTronPaymentWatcher(){
   void tick();
 }
 
+const bscRpcUrl=process.env.BSC_RPC_URL?.trim();
+const bscUsdtContract='0x55d398326f99059ff775485246999027b3197955';
+const transferTopic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const validBscTxid=value=>typeof value==='string'&&/^0x[a-f0-9]{64}$/i.test(value);
+const bscTopicAddress=address=>'0x'+address.slice(2).padStart(64,'0');
+const bscHex=value=>'0x'+value.toString(16);
+let bscLastHealthyAt=0;
+let bscLogBatchSize=1000;
+
+async function bscRpc(method,params){
+  const url=new URL(bscRpcUrl);
+  if(url.protocol!=='https:')throw Error('BSC_RPC_URL must use HTTPS');
+  const response=await fetch(url,{
+    method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:AbortSignal.timeout(10000)
+  });
+  if(!response.ok)throw Error(method+' HTTP '+response.status);
+  const payload=await response.json();
+  if(payload.error){
+    const error=Error(method+' RPC error '+payload.error.code);
+    error.rangeLimit=payload.error.code===-32005||
+      /range|too many results|more than|maximum.*blocks|limit.*blocks/i.test(payload.error.message||'');
+    throw error;
+  }
+  if(payload.id!==1||!Object.hasOwn(payload,'result'))throw Error('Invalid '+method+' response');
+  return payload.result;
+}
+
+function bscQuantity(value){
+  if(typeof value!=='string'||!/^0x[0-9a-f]+$/i.test(value))throw Error('Invalid BSC quantity');
+  const number=Number(BigInt(value));
+  if(!Number.isSafeInteger(number))throw Error('BSC quantity out of range');
+  return number;
+}
+
+async function getBscBlock(tag){
+  const block=await bscRpc('eth_getBlockByNumber',[tag,false]);
+  if(!block||!validBscTxid(block.hash))throw Error('Invalid BSC block');
+  const number=bscQuantity(block.number);
+  if(tag!=='finalized'&&number!==bscQuantity(tag))throw Error('Unexpected BSC block');
+  return {number,at:bscQuantity(block.timestamp)*1000,hash:block.hash.toLowerCase()};
+}
+
+async function firstBscBlockAt(since,low,high){
+  while(low<high){
+    const middle=Math.floor((low+high)/2);
+    const block=await getBscBlock(bscHex(middle));
+    if(block.at<since)low=middle+1;
+    else high=middle;
+  }
+  return low;
+}
+
+async function getBscTransfers(address,from,to){
+  const logs=await bscRpc('eth_getLogs',[{
+    address:bscUsdtContract,fromBlock:bscHex(from),toBlock:bscHex(to),
+    topics:[transferTopic,null,bscTopicAddress(address)]
+  }]);
+  if(!Array.isArray(logs))throw Error('Invalid BSC transfer response');
+  return logs;
+}
+
+async function scanBscWallet(address,since,tip){
+  if(since>tip.at)return;
+  const cursor=await pool.query('SELECT next_block FROM bsc_payment_cursors WHERE wallet_address=$1',[address]);
+  let next=Number(cursor.rows[0]?.next_block||0);
+  if(!next){
+    let low=tip.number;
+    for(let step=256;low>0;step*=2){
+      low=Math.max(0,tip.number-step);
+      if((await getBscBlock(bscHex(low))).at<since)break;
+    }
+    next=await firstBscBlockAt(since,low,tip.number);
+  }else if(next<=tip.number&&(await getBscBlock(bscHex(next))).at<since){
+    next=await firstBscBlockAt(since,next,tip.number);
+  }
+  for(let batch=0;next<=tip.number&&batch<16;batch++){
+    const end=Math.min(next+bscLogBatchSize-1,tip.number);
+    let logs;
+    try{logs=await getBscTransfers(address,next,end)}
+    catch(error){
+      if(!error.rangeLimit||bscLogBatchSize===1)throw error;
+      bscLogBatchSize=Math.max(1,Math.floor(bscLogBatchSize/2));
+      continue;
+    }
+    const blocks=new Map();
+    for(const log of logs){
+      if(log.removed||log.address?.toLowerCase()!==bscUsdtContract||log.topics?.length!==3||
+         log.topics[0]?.toLowerCase()!==transferTopic||log.topics[2]?.toLowerCase()!==bscTopicAddress(address)||
+         !validBscTxid(log.transactionHash)||!validBscTxid(log.blockHash)||!/^0x[0-9a-f]{64}$/i.test(log.data||''))continue;
+      const units18=BigInt(log.data);
+      // The invoice is displayed in millionths of a USDT. The BSC token uses 18 decimals.
+      if(units18===0n||units18%1000000000000n!==0n)continue;
+      const units=units18/1000000000000n;
+      if(units>9223372036854775807n)continue;
+      const number=bscQuantity(log.blockNumber);
+      if(number<next||number>end)throw Error('Transfer outside requested BSC block range');
+      if(!blocks.has(number))blocks.set(number,await getBscBlock(bscHex(number)));
+      const block=blocks.get(number);
+      if(block.hash!==log.blockHash.toLowerCase())throw Error('BSC transfer block hash mismatch');
+      try{
+        await pool.query(`UPDATE usdt_orders
+          SET status='paid',bsc_txid=$1,bsc_block_at=$2,reviewed_at=NOW(),reviewed_by=NULL
+          WHERE network='BEP20' AND status IN ('awaiting','review')
+            AND LOWER(wallet_address)=$3 AND bsc_amount_units=$4
+            AND $2::timestamptz BETWEEN date_trunc('second',created_at) AND bsc_expires_at`,
+        [log.transactionHash.toLowerCase(),new Date(block.at),address,units.toString()]);
+      }catch(error){
+        if(error.code!=='23505'||error.constraint!=='usdt_orders_bsc_txid_unique')throw error;
+      }
+    }
+    next=end+1;
+    await pool.query(`INSERT INTO bsc_payment_cursors(wallet_address,next_block)
+      VALUES($1,$2) ON CONFLICT(wallet_address) DO UPDATE
+      SET next_block=GREATEST(bsc_payment_cursors.next_block,EXCLUDED.next_block)`,[address,next]);
+  }
+}
+
+function startBscPaymentWatcher(){
+  if(!bscRpcUrl)return;
+  async function tick(){
+    try{
+      if(await bscRpc('eth_chainId',[])!=='0x38')throw Error('BSC RPC must be on mainnet (chain ID 56)');
+      const tip=await getBscBlock('finalized');
+      if(Date.now()-tip.at>5*60*1000||tip.at>Date.now()+30000)throw Error('Stale or invalid BSC finalized block');
+      // Verify that the configured endpoint actually serves logs before creating automatic invoices.
+      await getBscTransfers('0x'+'0'.repeat(40),tip.number,tip.number);
+      bscLastHealthyAt=Date.now();
+      const x=await pool.query(`SELECT LOWER(wallet_address) AS address, date_trunc('second',MIN(created_at)) AS since
+        FROM usdt_orders WHERE network='BEP20' AND status IN ('awaiting','review')
+          AND bsc_expires_at>NOW()-INTERVAL '24 hours' GROUP BY LOWER(wallet_address)`);
+      for(const {address,since} of x.rows){
+        await scanBscWallet(address,new Date(since).getTime(),tip);
+      }
+    }catch(error){
+      bscLastHealthyAt=0;
+      console.error('BEP20 order check:',error instanceof TypeError?'RPC connection or URL error':error.message);
+    }finally{setTimeout(tick,30000).unref()}
+  }
+  void tick();
+}
+
 function validUsdtAddress(network,address){
   if(network==='TRC20'){
     return address!==tronUsdtContract&&validTronAddress(address);
   }
 
   if(network==='BEP20'){
-    return /^0x[a-fA-F0-9]{40}$/.test(address);
+    return typeof address==='string'&&/^0x[a-fA-F0-9]{40}$/.test(address)&&
+      address.toLowerCase()!==bscUsdtContract&&address!=='0x'+'0'.repeat(40);
   }
 
   return false;
@@ -2832,11 +2996,15 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
 
     const address=network==='TRC20'
       ?config.trc20_address
-      :config.bep20_address;
+      :config.bep20_address?.toLowerCase();
 
     if(!validUsdtAddress(network,address)){
       await client.query('ROLLBACK');
       return bad(r,409,'Кошелёк этой сети ещё не настроен');
+    }
+    if(network==='BEP20'&&bscRpcUrl&&Date.now()-bscLastHealthyAt>90000){
+      await client.query('ROLLBACK');
+      return bad(r,503,'Проверка BEP20 временно недоступна. Попробуй позже или выбери TRC20.');
     }
 
     const products=await client.query(
@@ -2899,10 +3067,11 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       total*10000/rate
     );
     const autoTron=network==='TRC20'&&Boolean(tronGridKey);
-    const tronAmount=autoTron?await allocateTronAmount(client,address,amountCents):null;
-    if(autoTron&&!tronAmount){
+    const autoBsc=network==='BEP20'&&Boolean(bscRpcUrl);
+    const exactAmount=autoTron||autoBsc?await allocateAutomaticAmount(client,network,address,amountCents):null;
+    if((autoTron||autoBsc)&&!exactAmount){
       await client.query('ROLLBACK');
-      return bad(r,409,'Не удалось выделить уникальную сумму TRC20');
+      return bad(r,409,'Не удалось выделить уникальную сумму USDT');
     }
 
     const order=await client.query(
@@ -2915,14 +3084,17 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
          network,
          wallet_address,
          tron_amount_units,
-         tron_expires_at
+         tron_expires_at,
+         bsc_amount_units,
+         bsc_expires_at
        )
        VALUES($1,$2::jsonb,$3,$4,$5,$6,$7,$8::bigint,
-         CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
+         CASE WHEN $8::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END,
+         $9::bigint,CASE WHEN $9::bigint IS NOT NULL THEN NOW()+INTERVAL '30 minutes' END)
        RETURNING
          id,total_rub,rate_kopecks,
          amount_cents,network,
-         wallet_address,status,created_at,tron_amount_units,tron_expires_at`,
+         wallet_address,status,created_at,tron_amount_units,tron_expires_at,bsc_amount_units,bsc_expires_at`,
       [
         q.telegramUser.id,
         JSON.stringify(items),
@@ -2931,7 +3103,8 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
         amountCents,
         network,
         address,
-        tronAmount
+        autoTron?exactAmount:null,
+        autoBsc?exactAmount:null
       ]
     );
 
@@ -3001,7 +3174,8 @@ app.get('/api/admin/orders',admin,async(q,r)=>{
 
 app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
   const status=q.body?.status;
-  const txid=validTronTxid(q.body?.txid)?q.body.txid.toLowerCase():null;
+  const tronTxid=validTronTxid(q.body?.txid)?q.body.txid.toLowerCase():null;
+  const bscTxid=validBscTxid(q.body?.txid)?q.body.txid.toLowerCase():null;
 
   if(
     !validId(q.params.id)||
@@ -3017,27 +3191,30 @@ app.post('/api/admin/orders/:id/review',admin,async(q,r)=>{
        SET status=$1,
            reviewed_at=NOW(),
            reviewed_by=$2,
-           tron_txid=CASE WHEN tron_amount_units IS NOT NULL AND $1='paid' THEN $4::text ELSE tron_txid END
+           tron_txid=CASE WHEN tron_amount_units IS NOT NULL AND $1='paid' THEN $4::text ELSE tron_txid END,
+           bsc_txid=CASE WHEN bsc_amount_units IS NOT NULL AND $1='paid' THEN $5::text ELSE bsc_txid END
        WHERE id=$3
          AND status='review'
          AND (tron_amount_units IS NULL OR $1<>'paid' OR $4::text IS NOT NULL)
+         AND (bsc_amount_units IS NULL OR $1<>'paid' OR $5::text IS NOT NULL)
        RETURNING id,status,reviewed_at`,
       [
         status,
         q.admin.id,
         q.params.id,
-        txid
+        tronTxid,
+        bscTxid
       ]
     );
 
     if(!x.rowCount){
-      return bad(r,409,txid?'Платёж уже обработан':'Платёж уже обработан или требуется хеш перевода TRC20');
+      return bad(r,409,'Платёж уже обработан или требуется хеш перевода в правильной сети');
     }
 
     r.json(x.rows[0]);
   }catch(e){
-    if(e.code==='23505'&&e.constraint==='usdt_orders_tron_txid_unique'){
-      return bad(r,409,'Этот перевод TRC20 уже использован');
+    if(e.code==='23505'&&['usdt_orders_tron_txid_unique','usdt_orders_bsc_txid_unique'].includes(e.constraint)){
+      return bad(r,409,'Этот перевод уже использован');
     }
     console.error('Review USDT payment:',e);
     bad(r,500,'Ошибка подтверждения платежа');
@@ -3284,6 +3461,8 @@ app.get('/api/orders/my',user,async(q,r)=>{
         created_at,
         tron_amount_units,
         tron_expires_at,
+        bsc_amount_units,
+        bsc_expires_at,
         reported_at,
         reviewed_at,
         (SELECT status
@@ -3356,6 +3535,7 @@ async function start(){
         'REZZKIY MARKET port '+PORT
       );
       startTronPaymentWatcher();
+      startBscPaymentWatcher();
     }
   );
 }
