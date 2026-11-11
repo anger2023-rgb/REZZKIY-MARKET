@@ -4,7 +4,6 @@ import pg from 'pg';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {configureTelegramStart} from './telegram-start.js';
 
 const app=express();
 const {Pool}=pg;
@@ -683,8 +682,32 @@ app.get('/api/admin/supplier-product-groups',admin,async(_q,r)=>{
 });
 app.patch('/api/admin/supplier-product-groups/publish',admin,async(q,r)=>{
   const weapon=q.body?.weapon;
+  const count=q.body?.count;
   if(typeof weapon!=='string'||!weapon.trim()||weapon.length>120)return bad(r,400,'Выбери вид оружия');
+  if(count!==undefined&&(!Number.isSafeInteger(count)||count<1||count>2147483647)){
+    return bad(r,400,'Укажи целое количество от 1');
+  }
   try{
+    if(count!==undefined){
+      const x=await pool.query(`WITH selected AS (
+        SELECT id FROM products
+        WHERE ${supplierGroupScope} AND weapon=$1
+          AND ${supplierGroupAvailable} AND supplier_published IS DISTINCT FROM TRUE
+        ORDER BY id DESC LIMIT $2::integer FOR UPDATE
+      ), selection AS (
+        SELECT COUNT(*)::int AS total FROM selected
+      ), published AS (
+        UPDATE products AS p SET supplier_published=TRUE
+        FROM selected, selection
+        WHERE p.id=selected.id AND selection.total=$2::integer
+        RETURNING p.id
+      )
+      SELECT selection.total AS available, (SELECT COUNT(*)::int FROM published) AS published
+      FROM selection`,[weapon,count]);
+      const {available,published}=x.rows[0];
+      if(available<count)return bad(r,409,'Можно выставить только '+available+' позиций этого оружия. Укажи меньшее количество.');
+      return r.json({weapon,published});
+    }
     const x=await pool.query(`UPDATE products SET supplier_published=TRUE
       WHERE ${supplierGroupScope} AND weapon=$1
         AND ${supplierGroupAvailable}
@@ -3160,8 +3183,6 @@ app.get('/rules',(_q,r)=>{
   r.sendFile(path.join(DIR,'rules.html'));
 });
 
-const registerTelegramStart=configureTelegramStart(app,SITE_URL);
-
 app.use(express.static(DIR));
 
 app.get('/',(_q,r)=>{
@@ -3195,7 +3216,6 @@ async function start(){
       console.log(
         'REZZKIY MARKET port '+PORT
       );
-      void registerTelegramStart?.();
     }
   );
 }
