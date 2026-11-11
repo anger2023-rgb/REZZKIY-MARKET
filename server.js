@@ -666,12 +666,16 @@ app.put('/api/admin/supplier-markup',admin,async(q,r)=>{
   finally{client.release()}
 });
 // Bulk publication is scoped to one exact weapon across all supplier pages.
+const supplierGroupScope="source_type='SUPPLIER' AND supplier_code='BUYCS2'";
+const supplierGroupAvailable='quantity>0 AND supplier_cost_usd_cents>0 AND supplier_market_hash_name IS NOT NULL';
 app.get('/api/admin/supplier-product-groups',admin,async(_q,r)=>{
   try{
-    const x=await pool.query(`SELECT weapon,category,COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE supplier_published=TRUE)::int AS published
-      FROM products WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
-        AND quantity>0 AND supplier_cost_usd_cents>0 AND supplier_market_hash_name IS NOT NULL
+    const x=await pool.query(`SELECT weapon,category,
+      COUNT(*) FILTER (WHERE ${supplierGroupAvailable})::int AS total,
+      COUNT(*) FILTER (WHERE ${supplierGroupAvailable} AND supplier_published)::int AS published,
+      COUNT(*) FILTER (WHERE supplier_published)::int AS removable
+      FROM products WHERE ${supplierGroupScope}
+        AND (supplier_published OR (${supplierGroupAvailable}))
       GROUP BY weapon,category ORDER BY category,weapon`);
     r.set('Cache-Control','no-store');r.json({groups:x.rows});
   }catch(e){console.error('Supplier groups:',e);bad(r,500,'Не удалось загрузить группы скинов')}
@@ -681,11 +685,20 @@ app.patch('/api/admin/supplier-product-groups/publish',admin,async(q,r)=>{
   if(typeof weapon!=='string'||!weapon.trim()||weapon.length>120)return bad(r,400,'Выбери вид оружия');
   try{
     const x=await pool.query(`UPDATE products SET supplier_published=TRUE
-      WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2' AND weapon=$1
-        AND quantity>0 AND supplier_cost_usd_cents>0 AND supplier_market_hash_name IS NOT NULL
+      WHERE ${supplierGroupScope} AND weapon=$1
+        AND ${supplierGroupAvailable}
         AND supplier_published IS DISTINCT FROM TRUE`,[weapon]);
     r.json({weapon,published:x.rowCount});
   }catch(e){console.error('Bulk supplier publish:',e);bad(r,500,'Не удалось выставить группу скинов')}
+});
+app.patch('/api/admin/supplier-product-groups/unpublish',admin,async(q,r)=>{
+  const weapon=q.body?.weapon;
+  if(typeof weapon!=='string'||!weapon.trim()||weapon.length>120)return bad(r,400,'Выбери вид оружия');
+  try{
+    const x=await pool.query(`UPDATE products SET supplier_published=FALSE
+      WHERE ${supplierGroupScope} AND weapon=$1 AND supplier_published`,[weapon]);
+    r.json({weapon,unpublished:x.rowCount});
+  }catch(e){console.error('Bulk supplier unpublish:',e);bad(r,500,'Не удалось снять группу с каталога')}
 });
 
 app.patch('/api/admin/supplier-products/:id/publish',admin,async(q,r)=>{
