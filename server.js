@@ -1414,24 +1414,32 @@ app.get('/api/steam/me',user,async(q,r)=>{
 const skinportCache={prices:new Map(),expires:0,inflight:null};
 const MIN_MARKET_RUB=40;
 const BUYOUT_RATE=.75;
+function inventoryPriceKey(name){
+  return String(name||'').trim().normalize('NFC');
+}
+
+function skinportPriceMap(rows){
+  const prices=new Map();
+  for(const row of rows){
+    if(row?.currency!=='RUB'||row.version)continue;
+    const name=inventoryPriceKey(row.market_hash_name);
+    // When there are no listings, Skinport can still provide a suggested price.
+    const value=Number(row.min_price??row.suggested_price);
+    if(name&&Number.isFinite(value)&&value>0)prices.set(name,value);
+  }
+  return prices;
+}
+
 async function skinportPrices(){
   if(skinportCache.expires>Date.now()&&skinportCache.prices.size)return skinportCache.prices;
   if(skinportCache.inflight)return skinportCache.inflight;
   skinportCache.inflight=(async()=>{
     const u='https://api.skinport.com/v1/items?app_id=730&currency=RUB&tradable=0';
-    const resp=await fetch(u,{headers:{'Accept':'application/json','Accept-Encoding':'gzip, deflate, br'},signal:AbortSignal.timeout(18000)});
+    const resp=await fetch(u,{headers:{'Accept':'application/json','Accept-Encoding':'br'},signal:AbortSignal.timeout(18000)});
     if(!resp.ok)throw Error('Skinport HTTP '+resp.status);
     const data=await resp.json();
     if(!Array.isArray(data))throw Error('Skinport вернул неожиданный формат');
-    const prices=new Map();
-    for(const p of data){
-      const name=String(p.market_hash_name||'');
-      // Missing quotes must not be converted to zero or replaced with a guessed price.
-      // Skinport phase/version-specific prices cannot safely be mapped by name alone.
-      if(p.min_price===null||p.min_price===undefined||p.version)continue;
-      const value=Number(p.min_price);
-      if(name&&Number.isFinite(value)&&value>0&&p.currency==='RUB')prices.set(name,value);
-    }
+    const prices=skinportPriceMap(data);
     if(!prices.size)throw Error('Skinport не вернул цены');
     skinportCache.prices=prices;skinportCache.expires=Date.now()+6*60*1000;
     return prices;
@@ -1457,7 +1465,7 @@ function quoteInventory(items,prices){
     if(/(?:Sticker|Charm|Patch|Graffiti|Sealed Graffiti|Case|Container|Key|Music Kit|Agent|Pin|Collectible)/i.test(item.type||'')){
       stats.excluded++;summarize(excludedByType,item.type);continue;
     }
-    const market=prices.get(item.name);
+    const market=prices.get(inventoryPriceKey(item.name));
     if(!Number.isFinite(market)||market<=0){stats.unpriced++;summarize(unpricedByType,item.type);continue;}
     if(market<MIN_MARKET_RUB){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     const buyout=Math.floor(market*BUYOUT_RATE*100)/100;
@@ -1468,13 +1476,22 @@ function quoteInventory(items,prices){
   }
   return {items:quoted,stats,categoryDiagnostics:{excludedByType,belowMinimumByType,unpricedByType,eligibleByType}};
 }
-function inventoryResponse(items,prices){
+function inventoryResponse(inventory,prices){
+  const {items,totalAssets,nonTradable,missingDescriptions}=inventory;
   const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices);
   // An inventory with unpriced items is not proven to contain no qualifying skins.
-  const state=quoted.length?'ready':!items.length?'empty_inventory':stats.unpriced?'prices_unavailable':'no_eligible_items';
+  let state='ready';
+  if(!quoted.length){
+    if(missingDescriptions)state='incomplete_inventory';
+    else if(!totalAssets)state='empty_inventory';
+    else if(!items.length)state='no_tradable_items';
+    else if(stats.unpriced)state='prices_unavailable';
+    else state='no_eligible_items';
+  }
   console.info('[sell-inventory] evaluated',JSON.stringify(stats), 'state='+state);
   console.info('[sell-inventory] categories',JSON.stringify(categoryDiagnostics));
-  return {items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB,state};
+  return {items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB,state,
+    stats:{...stats,totalAssets,nonTradable,missingDescriptions}};
 }
 const inventoryCache=new Map();
 const inventoryRequests=new Map();
@@ -1485,6 +1502,7 @@ async function fetchInventory(id){
   let pages=0;
   let totalAssets=0;
   let nonTradable=0;
+  let missingDescriptions=0;
 
   for(let i=0;i<20;i++){
     const u=new URL(
@@ -1518,7 +1536,11 @@ async function fetchInventory(id){
 
     let data;
     try{data=await resp.json()}catch(e){throw Error('Steam вернул некорректный JSON')}
-    if(data?.success!==1||!Array.isArray(data.assets)||!Array.isArray(data.descriptions)){
+    const success=data?.success===1||data?.success==='1'||data?.success===true;
+    if(success&&i===0&&Number(data.total_inventory_count)===0&&!data.more_items&&(!data.assets||data.assets.length===0)){
+      return {items,totalAssets,nonTradable,missingDescriptions};
+    }
+    if(!success||!Array.isArray(data.assets)||!Array.isArray(data.descriptions)){
       throw Error('Steam не предоставил корректный инвентарь');
     }
     pages++;
@@ -1536,7 +1558,8 @@ async function fetchInventory(id){
         a.classid+'_'+a.instanceid
       );
 
-      if(d?.tradable!==1){nonTradable++;continue;}
+      if(!d){missingDescriptions++;continue;}
+      if(d.tradable!==1&&d.tradable!=='1'&&d.tradable!==true){nonTradable++;continue;}
 
       items.push({
         assetid:String(a.assetid),
@@ -1544,7 +1567,7 @@ async function fetchInventory(id){
         instanceid:String(a.instanceid),
         name:String(
           d.market_hash_name||d.name||'CS2 item'
-        ).slice(0,200),
+        ),
         icon:/^[a-zA-Z0-9_/-]+$/.test(d.icon_url||'')
           ?'https://community.fastly.steamstatic.com/economy/image/'+d.icon_url
           :'',
@@ -1554,8 +1577,8 @@ async function fetchInventory(id){
     }
 
     if(!data.more_items){
-      console.info('[sell-inventory] Steam loaded',JSON.stringify({pages,totalAssets,tradable:items.length,nonTradable}));
-      return items;
+      console.info('[sell-inventory] Steam loaded',JSON.stringify({pages,totalAssets,tradable:items.length,nonTradable,missingDescriptions}));
+      return {items,totalAssets,nonTradable,missingDescriptions};
     }
     if(!data.last_assetid||String(data.last_assetid)===cursor){
       throw Error('Steam вернул некорректную пагинацию инвентаря');
@@ -1642,8 +1665,8 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached?.steamId===id&&
       cached.expires>Date.now()
     ){
-      const prices=await skinportPrices();
-      return r.json(inventoryResponse(cached.items,prices));
+      const prices=cached.items.length?await skinportPrices():new Map();
+      return r.json(inventoryResponse(cached,prices));
     }
 
     if(
@@ -1654,19 +1677,19 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
 
     inventoryRequests.set(id,Date.now());
 
-    const items=await fetchInventory(id);
+    const inventory=await fetchInventory(id);
 
     inventoryCache.set(
       String(q.telegramUser.id),
       {
         steamId:id,
-        items,
+        ...inventory,
         expires:Date.now()+120000
       }
     );
 
-    const prices=await skinportPrices();
-    r.json(inventoryResponse(items,prices));
+    const prices=inventory.items.length?await skinportPrices():new Map();
+    r.json(inventoryResponse(inventory,prices));
   }catch(e){
     console.warn('[sell-inventory] load failed',JSON.stringify({type:e.name||'Error',status:e.status||502,reason:String(e.message||'Unknown').slice(0,120)}));
     bad(r,e.status||502,e.message||'Ошибка загрузки инвентаря');
