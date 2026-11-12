@@ -2857,9 +2857,25 @@ async function loadInventory(){
   const data=await api('/api/steam/inventory');
   if(!Array.isArray(data.items)||typeof data.state!=='string')throw Error('Некорректный ответ сервера инвентаря');
   inventoryItems=data.items;selectedAssets.clear();renderInventory();
-  const messages={empty_inventory:'Инвентарь Steam пуст.',prices_unavailable:'Не удалось определить цены некоторых предметов. Попробуйте позже.',no_eligible_items:'Нет доступных для продажи предметов стоимостью от 40 ₽.',ready:''};
-  if(!(data.state in messages))throw Error('Неизвестный статус инвентаря');
-  $('inventoryStatus').textContent=messages[data.state];
+  const messages={
+   empty_inventory:'Steam вернул пустой инвентарь CS2.',
+   no_tradable_items:'Steam сейчас не разрешает обмен ни одного предмета из этого инвентаря.',
+   incomplete_inventory:'Steam не передал описание некоторых предметов. Повтори загрузку.',
+   prices_unavailable:'Для части предметов Skinport не вернул цену. Повтори загрузку позже.',
+   no_eligible_items:'По ценам Skinport нет доступных для выкупа скинов от 40 ₽.',
+   ready:''
+  };
+  if(!Object.hasOwn(messages,data.state))throw Error('Неизвестный статус инвентаря');
+  const stats=data.stats;
+  const details=stats&&data.state!=='empty_inventory'
+   ?' Steam нашёл '+stats.totalAssets+' предметов. Доступно для обмена '+stats.tradable+
+     ', ниже 40 ₽ '+stats.belowMinimum+', без цены '+stats.unpriced+', подходит для выкупа '+stats.eligible+'.'
+   :'';
+  $('inventoryStatus').textContent=(messages[data.state]+details).trim();
+  if(!data.items.length){
+   $('inventoryRetry').style.display='block';
+   updateInventoryCooldown();
+  }
  }catch(e){
   const msg=String(e.message||e);
   const limited=/429|rate.limit|too many|ограничил|подожди|15 секунд|temporar|throttl/i.test(msg);
