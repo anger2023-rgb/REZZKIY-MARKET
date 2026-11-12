@@ -1442,27 +1442,38 @@ async function skinportPrices(){
 }
 function quoteInventory(items,prices){
   const stats={tradable:items.length,excluded:0,unpriced:0,belowMinimum:0,eligible:0};
+  // Only aggregated item types are logged: no Steam IDs, inventory names, or secrets.
+  const excludedByType=Object.create(null);
+  const belowMinimumByType=Object.create(null);
+  const eligibleByType=Object.create(null);
+  const unpricedByType=Object.create(null);
+  const summarize=(target,type)=>{
+    const key=String(type||'Unknown').slice(0,80);
+    target[key]=(target[key]||0)+1;
+  };
   const quoted=[];
   for(const item of items){
     // Retain existing exclusion of items requiring individual appraisal.
     if(/(?:Sticker|Charm|Patch|Graffiti|Sealed Graffiti|Case|Container|Key|Music Kit|Agent|Pin|Collectible)/i.test(item.type||'')){
-      stats.excluded++;continue;
+      stats.excluded++;summarize(excludedByType,item.type);continue;
     }
     const market=prices.get(item.name);
-    if(!Number.isFinite(market)||market<=0){stats.unpriced++;continue;}
-    if(market<MIN_MARKET_RUB){stats.belowMinimum++;continue;}
+    if(!Number.isFinite(market)||market<=0){stats.unpriced++;summarize(unpricedByType,item.type);continue;}
+    if(market<MIN_MARKET_RUB){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     const buyout=Math.floor(market*BUYOUT_RATE*100)/100;
-    if(buyout<=0){stats.belowMinimum++;continue;}
+    if(buyout<=0){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     quoted.push({...item,market_rub:market,buyout_rub:buyout});
+    summarize(eligibleByType,item.type);
     stats.eligible++;
   }
-  return {items:quoted,stats};
+  return {items:quoted,stats,categoryDiagnostics:{excludedByType,belowMinimumByType,unpricedByType,eligibleByType}};
 }
 function inventoryResponse(items,prices){
-  const {items:quoted,stats}=quoteInventory(items,prices);
+  const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices);
   // An inventory with unpriced items is not proven to contain no qualifying skins.
   const state=quoted.length?'ready':!items.length?'empty_inventory':stats.unpriced?'prices_unavailable':'no_eligible_items';
   console.info('[sell-inventory] evaluated',JSON.stringify(stats), 'state='+state);
+  console.info('[sell-inventory] categories',JSON.stringify(categoryDiagnostics));
   return {items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB,state};
 }
 const inventoryCache=new Map();
