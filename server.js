@@ -1426,8 +1426,11 @@ async function skinportPrices(){
     const prices=new Map();
     for(const p of data){
       const name=String(p.market_hash_name||'');
+      // Missing quotes must not be converted to zero or replaced with a guessed price.
+      // Skinport phase/version-specific prices cannot safely be mapped by name alone.
+      if(p.min_price===null||p.min_price===undefined||p.version)continue;
       const value=Number(p.min_price);
-      if(name&&Number.isFinite(value)&&value>0)prices.set(name,value);
+      if(name&&Number.isFinite(value)&&value>0&&p.currency==='RUB')prices.set(name,value);
     }
     if(!prices.size)throw Error('Skinport не вернул цены');
     skinportCache.prices=prices;skinportCache.expires=Date.now()+6*60*1000;
@@ -1438,15 +1441,29 @@ async function skinportPrices(){
   finally{skinportCache.inflight=null}
 }
 function quoteInventory(items,prices){
-  return items.flatMap(item=>{
-    // Unusual item variants and nonstandard overpay require individual appraisal.
-    if(/(?:Sticker|Charm|Patch|Graffiti|Sealed Graffiti|Case|Container|Key|Music Kit|Agent|Pin|Collectible)/i.test(item.type||''))return [];
+  const stats={tradable:items.length,excluded:0,unpriced:0,belowMinimum:0,eligible:0};
+  const quoted=[];
+  for(const item of items){
+    // Retain existing exclusion of items requiring individual appraisal.
+    if(/(?:Sticker|Charm|Patch|Graffiti|Sealed Graffiti|Case|Container|Key|Music Kit|Agent|Pin|Collectible)/i.test(item.type||'')){
+      stats.excluded++;continue;
+    }
     const market=prices.get(item.name);
-    if(!Number.isFinite(market)||market<MIN_MARKET_RUB)return [];
+    if(!Number.isFinite(market)||market<=0){stats.unpriced++;continue;}
+    if(market<MIN_MARKET_RUB){stats.belowMinimum++;continue;}
     const buyout=Math.floor(market*BUYOUT_RATE*100)/100;
-    if(buyout<=0)return [];
-    return [{...item,market_rub:market,buyout_rub:buyout}];
-  });
+    if(buyout<=0){stats.belowMinimum++;continue;}
+    quoted.push({...item,market_rub:market,buyout_rub:buyout});
+    stats.eligible++;
+  }
+  return {items:quoted,stats};
+}
+function inventoryResponse(items,prices){
+  const {items:quoted,stats}=quoteInventory(items,prices);
+  // An inventory with unpriced items is not proven to contain no qualifying skins.
+  const state=quoted.length?'ready':!items.length?'empty_inventory':stats.unpriced?'prices_unavailable':'no_eligible_items';
+  console.info('[sell-inventory] evaluated',JSON.stringify(stats), 'state='+state);
+  return {items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB,state};
 }
 const inventoryCache=new Map();
 const inventoryRequests=new Map();
@@ -1454,8 +1471,11 @@ const inventoryRequests=new Map();
 async function fetchInventory(id){
   let cursor=null;
   const items=[];
+  let pages=0;
+  let totalAssets=0;
+  let nonTradable=0;
 
-  for(let i=0;i<5;i++){
+  for(let i=0;i<20;i++){
     const u=new URL(
       'https://steamcommunity.com/inventory/'+id+'/730/2'
     );
@@ -1472,6 +1492,7 @@ async function fetchInventory(id){
     });
 
     if(!resp.ok){
+      console.warn('[sell-inventory] Steam HTTP status='+resp.status+' page='+ (i+1));
       const e=Error(
         resp.status===429
           ?'Steam ограничил запросы'
@@ -1484,11 +1505,13 @@ async function fetchInventory(id){
       throw e;
     }
 
-    const data=await resp.json();
-
-    if(data.success!==1){
-      throw Error('Steam не предоставил инвентарь');
+    let data;
+    try{data=await resp.json()}catch(e){throw Error('Steam вернул некорректный JSON')}
+    if(data?.success!==1||!Array.isArray(data.assets)||!Array.isArray(data.descriptions)){
+      throw Error('Steam не предоставил корректный инвентарь');
     }
+    pages++;
+    totalAssets+=data.assets.length;
 
     const desc=new Map(
       (data.descriptions||[]).map(d=>[
@@ -1502,7 +1525,7 @@ async function fetchInventory(id){
         a.classid+'_'+a.instanceid
       );
 
-      if(d?.tradable!==1)continue;
+      if(d?.tradable!==1){nonTradable++;continue;}
 
       items.push({
         assetid:String(a.assetid),
@@ -1519,14 +1542,17 @@ async function fetchInventory(id){
       });
     }
 
-    if(!data.more_items||!data.last_assetid){
-      break;
+    if(!data.more_items){
+      console.info('[sell-inventory] Steam loaded',JSON.stringify({pages,totalAssets,tradable:items.length,nonTradable}));
+      return items;
     }
-
+    if(!data.last_assetid||String(data.last_assetid)===cursor){
+      throw Error('Steam вернул некорректную пагинацию инвентаря');
+    }
     cursor=String(data.last_assetid);
   }
-
-  return items;
+  // Never present the first 20 pages as the complete inventory.
+  throw Error('Инвентарь слишком большой: не все страницы Steam загружены');
 }
 
 app.get('/api/sell/rules',user,async(q,r)=>{
@@ -1606,8 +1632,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached.expires>Date.now()
     ){
       const prices=await skinportPrices();
-      const quoted=quoteInventory(cached.items,prices);
-      return r.json({items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB});
+      return r.json(inventoryResponse(cached.items,prices));
     }
 
     if(
@@ -1630,10 +1655,10 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
     );
 
     const prices=await skinportPrices();
-    const quoted=quoteInventory(items,prices);
-    r.json({items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB});
+    r.json(inventoryResponse(items,prices));
   }catch(e){
-    bad(r,e.status||502,e.message);
+    console.warn('[sell-inventory] load failed',JSON.stringify({type:e.name||'Error',status:e.status||502,reason:String(e.message||'Unknown').slice(0,120)}));
+    bad(r,e.status||502,e.message||'Ошибка загрузки инвентаря');
   }
 });
 
@@ -1679,7 +1704,7 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
     // Reprice on the server immediately before accepting an order.
     const prices=await skinportPrices();
-    const quoted=quoteInventory(items,prices);
+    const {items:quoted}=quoteInventory(items,prices);
     if(quoted.length!==items.length)return bad(r,409,'Цена изменилась. Обнови инвентарь');
     const totalKopecks=quoted.reduce((sum,item)=>sum+Math.round(item.buyout_rub*100)*Number(item.amount||1),0);
     const offer=Math.floor(totalKopecks/100);
