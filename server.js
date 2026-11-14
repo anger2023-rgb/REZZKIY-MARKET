@@ -805,6 +805,27 @@ app.patch('/api/admin/supplier-product-groups/unpublish',admin,async(q,r)=>{
   }catch(e){console.error('Bulk supplier unpublish:',e);bad(r,500,'Не удалось снять группу с каталога')}
 });
 
+// Global supplier visibility: bounded batches protect PostgreSQL from massive writes.
+// This does not delete inventory, orders, or manually added products.
+app.patch('/api/admin/supplier-products/bulk-visibility',admin,async(q,r)=>{
+  const published=q.body?.published;
+  if(typeof published!=='boolean')return bad(r,400,'Укажи действие публикации');
+  const condition=published
+    ? `${supplierGroupAvailable} AND supplier_published IS DISTINCT FROM TRUE`
+    : 'supplier_published=TRUE';
+  try{
+    const result=await pool.query(`WITH batch AS (
+      SELECT id FROM products WHERE ${supplierGroupScope} AND ${condition}
+      ORDER BY id LIMIT 250 FOR UPDATE SKIP LOCKED
+    ) UPDATE products p SET supplier_published=$1 FROM batch
+      WHERE p.id=batch.id`,[published]);
+    const pending=await pool.query(`SELECT EXISTS(SELECT 1 FROM products
+      WHERE ${supplierGroupScope} AND ${condition}) AS remaining`);
+    r.set('Cache-Control','no-store');
+    r.json({changed:result.rowCount,remaining:pending.rows[0].remaining});
+  }catch(e){console.error('Global supplier visibility:',e);bad(r,500,'Не удалось изменить публикацию товаров поставщика')}
+});
+
 app.patch('/api/admin/supplier-products/:id/publish',admin,async(q,r)=>{
   const published=q.body?.published;
   if(!validId(q.params.id)||typeof published!=='boolean')return bad(r,400,'Неверные данные публикации');
