@@ -662,6 +662,33 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
 #sell #sellSelected:disabled{background:#362e38;color:#aa9bab;filter:none;opacity:1}
 #sell .sell-item:focus-visible,#sell .sell-steam-connect:focus-visible,#sell #sellSelected:focus-visible{outline:2px solid #ffac70;outline-offset:2px}
 #sell .sell-action[hidden]{display:none}
+
+/* REZZKIY MARKET: streamlined sell inventory */
+#sell .sell-inventory{background:#151418;border:1px solid #343038;border-radius:18px;padding:15px 12px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
+#sell .sell-inventory h3{font-size:19px;letter-spacing:-.3px;margin:0 0 10px;color:#f7f5f6}
+#sell .sell-inventory-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:13px 0 11px;padding:8px 2px}
+#sell .sell-inventory-tools[hidden]{display:none}
+#sell .sell-select-all-label{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:750;color:#f7f4f2}
+#sell #sellSelectAll{appearance:none;width:20px;height:20px;border:1.5px solid #8b7987;border-radius:6px;background:#242026;display:grid;place-items:center;margin:0;flex-shrink:0}
+#sell #sellSelectAll:checked{background:#ff912f;border-color:#ff912f}
+#sell #sellSelectAll:checked:after{content:'✓';font-size:15px;font-weight:900;color:#1b120b}
+#sell #sellSelectAll:indeterminate:after{content:'−';font-size:17px;font-weight:900;color:#ff912f}
+#sell .sell-inventory-count{font-size:12px;color:#a49aa4}
+#sell #inventoryGrid{gap:10px}
+#sell .sell-item{padding:9px;border:1px solid #38323d;border-radius:13px;background:#1e1c23;transition:border-color .15s,background .15s;overflow:hidden}
+#sell .sell-item[aria-pressed="true"]{border:2px solid #ff922e;padding:8px;background:#2b211e}
+#sell .sell-item-image{display:flex;align-items:center;justify-content:center;width:100%;height:105px;background:radial-gradient(ellipse at 50% 60%,#2e2a32 0%,#19181e 75%);border-radius:9px}
+#sell .sell-item-image img{height:98px;width:100%;object-fit:contain;background:transparent}
+#sell .sell-item-name{font-size:12px;line-height:1.35;min-height:33px;margin:9px 1px 3px;color:#f3eff2}
+#sell .sell-item-price{font-size:15px;color:#ff9b50;margin:6px 1px 1px}
+#sell .sell-item-mark{top:14px;right:14px;width:20px;height:20px;border-radius:6px;background:#1b1920;border:1.5px solid #a28a9a;color:#1c140e;font-size:14px;z-index:1}
+#sell .sell-item[aria-pressed="true"] .sell-item-mark{background:#ff922e;border-color:#ff922e}
+#sell .sell-action{background:#201d23;border-color:#3d333c;border-radius:14px;padding:12px;margin-top:13px}
+#sell .sell-action-summary{font-size:13px;color:#bfb4bd}
+#sell .sell-action-summary strong{font-size:16px;color:#ffad70}
+#sell #sellSelected{background:#ff922e;border-radius:10px;color:#1b120b;font-size:15px;min-height:47px}
+#sell #sellSelected:disabled{background:#373039;color:#a89eaa}
+#sell #inventoryStatus:empty{display:none}
 </style>
 <style>
 .topup-open{margin-top:6px;align-self:flex-start}
@@ -760,6 +787,7 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
   <h3>Мой инвентарь CS2</h3>
   <div id="inventoryLoading" class="inventory-loading" style="display:none"><div class="spinner"></div><span>Загружаем скины Steam...</span></div>
   <p id="inventoryStatus" role="status"></p>
+  <div id="sellInventoryTools" class="sell-inventory-tools" hidden><label class="sell-select-all-label"><input type="checkbox" id="sellSelectAll" onchange="toggleAllSellItems(this.checked)"><span>Выбрать всё</span></label><span id="sellInventoryCount" class="sell-inventory-count"></span></div>
   <button class="secondary full retry-btn" id="inventoryRetry" onclick="loadInventory()">Повторить загрузку</button>
   <div id="inventoryGrid"></div>
   <div class="sell-action" id="sellAction" hidden>
@@ -2795,13 +2823,25 @@ function renderSellSummary(){
  const chosen=inventoryItems.filter(item=>selectedAssets.has(item.assetid));
  const rubles=Math.floor(chosen.reduce((sum,item)=>sum+buyoutKopecks(item),0)/100);
  $('sellAction').hidden=inventoryItems.length===0;
+ const allCheckbox=$('sellSelectAll');
+ if(allCheckbox){const selectable=Math.min(inventoryItems.length,30);allCheckbox.checked=selectable>0&&chosen.length===selectable;allCheckbox.indeterminate=chosen.length>0&&chosen.length<selectable;allCheckbox.disabled=sellSubmitting||!selectable;}
  $('sellSelectionCount').textContent='Выбрано: '+chosen.length;
  if(chosen.length)setDisplayPrice($('sellSelectionPrice'),rubles,'К выплате: ');
  else{delete $('sellSelectionPrice').dataset.displayRub;$('sellSelectionPrice').textContent=''}
  $('sellSelected').disabled=sellSubmitting||!chosen.length;
- $('sellSelected').textContent=sellSubmitting?'Обработка…':'Продать';
+ $('sellSelected').textContent=sellSubmitting?'Обработка…':'Продать выбранное';
+}
+function toggleAllSellItems(checked){
+ if(sellSubmitting)return;
+ selectedAssets.clear();
+ if(checked){for(const item of inventoryItems.slice(0,30))selectedAssets.add(item.assetid);}
+ renderInventory();
+ if(checked&&inventoryItems.length>30)uiAlert('За одну заявку можно выбрать максимум 30 предметов. Выбраны первые 30.');
 }
 function renderInventory(){
+ const tools=$('sellInventoryTools');
+ tools.hidden=inventoryItems.length===0;
+ $('sellInventoryCount').textContent=inventoryItems.length+' предметов';
  const grid=$('inventoryGrid');
  grid.replaceChildren();
  for(const item of inventoryItems){
@@ -2820,7 +2860,8 @@ function renderInventory(){
    card.setAttribute('aria-pressed',String(selected));
    mark.textContent=selected?'✓':'';
   };
-  card.append(image,mark,name,setDisplayPrice(el('span','sell-item-price'),buyoutKopecks(item)/100));
+  const imageWrap=el('span','sell-item-image');imageWrap.append(image);
+  card.append(imageWrap,mark,name,setDisplayPrice(el('span','sell-item-price'),buyoutKopecks(item)/100));
   card.onclick=()=>{
    if(sellSubmitting)return;
    if(selectedAssets.has(item.assetid))selectedAssets.delete(item.assetid);
@@ -2866,12 +2907,8 @@ async function loadInventory(){
    ready:''
   };
   if(!Object.hasOwn(messages,data.state))throw Error('Неизвестный статус инвентаря');
-  const stats=data.stats;
-  const details=stats&&data.state!=='empty_inventory'
-   ?' Steam нашёл '+stats.totalAssets+' предметов. Доступно для обмена '+stats.tradable+
-     ', ниже '+data.minMarketRub+' ₽ '+stats.belowMinimum+', без цены '+stats.unpriced+', подходит для выкупа '+stats.eligible+'.'
-   :'';
-  $('inventoryStatus').textContent=(messages[data.state]+details).trim();
+  // Technical inventory statistics remain on the backend; show only actionable status messages.
+  $('inventoryStatus').textContent=messages[data.state];
   if(!data.items.length){
    $('inventoryRetry').style.display='block';
    updateInventoryCooldown();
