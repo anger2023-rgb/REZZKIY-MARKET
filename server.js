@@ -536,7 +536,7 @@ async function initDb(){
   await pool.query(`
     ALTER TABLE usdt_orders
     ADD CONSTRAINT usdt_orders_network_check
-    CHECK(network IN ('TRC20','BEP20','BALANCE'))
+    CHECK(network IN ('TRC20','BEP20','BALANCE','RUB'))
   `);
 
   await pool.query(`
@@ -3230,6 +3230,41 @@ app.post('/api/orders/balance',user,async(q,r)=>{
     console.error('Balance checkout:',e);
     bad(r,500,'Ошибка оплаты с баланса. Проверь историю заказов перед повторной попыткой');
   }finally{if(client)client.release()}
+});
+
+// Manual ruble orders share the existing order ID sequence with USDT and balance purchases.
+app.post('/api/orders/rub',user,async(q,r)=>{
+ const ids=q.body?.productIds;
+ if(!Array.isArray(ids)||!ids.length||ids.length>50||ids.some(id=>!validId(id))||new Set(ids.map(String)).size!==ids.length)return bad(r,400,'Проверь выбранные товары');
+ let db;
+ try{
+  db=await pool.connect();await db.query('BEGIN');
+  await db.query('SELECT pg_advisory_xact_lock($1::bigint)',[q.telegramUser.id]);
+  const found=await db.query(`SELECT id,weapon,skin,condition,price,quantity,source_type,supplier_code,supplier_listing_id,steam_asset_id,supplier_cost_usd_cents,supplier_market_hash_name,supplier_published FROM products WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE`,[ids]);
+  if(found.rows.length!==ids.length||found.rows.some(x=>x.quantity<1||(x.source_type==='SUPPLIER'&&(!x.supplier_published||x.supplier_code!=='BUYCS2'||!x.supplier_cost_usd_cents||!x.supplier_market_hash_name)))){await db.query('ROLLBACK');return bad(r,409,'Некоторые товары недоступны')}
+  const items=ids.map(id=>{const x=found.rows.find(p=>String(p.id)===String(id));return {product_id:x.id,weapon:x.weapon,skin:x.skin,condition:x.condition,price:x.price,quantity:1,source_type:x.source_type,supplier_code:x.supplier_code||null,supplier_listing_id:x.supplier_listing_id||null,steam_asset_id:x.steam_asset_id||null,supplier_cost_usd_cents:x.supplier_cost_usd_cents==null?null:Number(x.supplier_cost_usd_cents),supplier_market_hash_name:x.supplier_market_hash_name||null}});
+  const total=items.reduce((v,x)=>v+Number(x.price),0);
+  if(!Number.isSafeInteger(total)||total<1||total>2147483647){await db.query('ROLLBACK');return bad(r,400,'Некорректная сумма')}
+  // Reuse a still-pending identical order rather than creating a new number on every tap.
+  const prior=await db.query(`SELECT id,total_rub,network,status FROM usdt_orders WHERE telegram_id=$1 AND network='RUB' AND status='awaiting' AND items=$2::jsonb ORDER BY id DESC LIMIT 1`,[q.telegramUser.id,JSON.stringify(items)]);
+  if(prior.rows.length){await db.query('COMMIT');return r.json(prior.rows[0])}
+  const result=await db.query(`INSERT INTO usdt_orders(telegram_id,items,total_rub,rate_kopecks,amount_cents,network,wallet_address,status) VALUES($1,$2::jsonb,$3,10000,$4,'RUB','','awaiting') RETURNING id,total_rub,network,status`,[q.telegramUser.id,JSON.stringify(items),total,total*100]);
+  await db.query('COMMIT');return r.status(201).json(result.rows[0]);
+ }catch(e){if(db)try{await db.query('ROLLBACK')}catch{}console.error('RUB order:',e);return bad(r,500,'Не удалось оформить заказ')}finally{if(db)db.release()}
+});
+
+app.get('/api/admin/deals',admin,async(q,r)=>{
+ try{const x=await pool.query(`SELECT o.id,o.telegram_id,o.items,o.total_rub,o.network,o.status,o.created_at,o.reviewed_at,o.reviewed_by,u.username FROM usdt_orders o LEFT JOIN market_users u ON u.telegram_id=o.telegram_id WHERE o.order_kind='purchase' ORDER BY o.id DESC LIMIT 250`);r.json(x.rows)}catch(e){console.error('Deals:',e);bad(r,500,'Ошибка загрузки сделок')}
+});
+app.patch('/api/admin/deals/:id/status',admin,async(q,r)=>{
+ const id=q.params.id,status=q.body?.status;
+ if(!validId(id)||!['awaiting','review','paid','rejected'].includes(status))return bad(r,400,'Некорректный статус');
+ if(!q.body?.confirmed)return bad(r,400,'Требуется подтверждение администратора');
+ try{
+  const result=await pool.query(`UPDATE usdt_orders SET status=$1,reviewed_at=NOW(),reviewed_by=$2 WHERE id=$3 AND network='RUB' AND status IN ('awaiting','review') RETURNING id,status`,[status,q.admin.id,id]);
+  if(!result.rows.length)return bad(r,409,'Сделка уже обработана или не относится к оплате рублями');
+  r.json(result.rows[0]);
+ }catch(e){console.error('Deal status:',e);bad(r,500,'Ошибка изменения статуса')}
 });
 
 /* USDT invoice and order routes */
