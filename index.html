@@ -689,6 +689,8 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
 #sell #sellSelected{background:#ff922e;border-radius:10px;color:#1b120b;font-size:15px;min-height:47px}
 #sell #sellSelected:disabled{background:#373039;color:#a89eaa}
 #sell #inventoryStatus:empty{display:none}
+.rm-work-channel{margin-top:12px}
+.rm-work-avatar{color:#ff9a2b;font-size:26px;font-weight:900}
 </style>
 <style>
 .topup-open{margin-top:6px;align-self:flex-start}
@@ -737,6 +739,13 @@ body>header,body>main{position:relative;z-index:1}body>header{z-index:12}body>na
     <div class="rm-channel-copy"><div class="rm-channel-name">REZZKIY MARKET</div><div class="rm-channel-handle">@rezzkiy_market · Telegram-канал</div><div class="rm-channel-subtitle">Новости · Новые скины · Акции</div></div>
   </div>
   <a class="rm-channel-cta" href="https://t.me/rezzkiy_market" target="_blank" rel="noopener noreferrer" onclick="if(window.Telegram?.WebApp?.openTelegramLink){event.preventDefault();window.Telegram.WebApp.openTelegramLink(this.href)}">Подписаться на канал ↗</a>
+</aside>
+<aside class="rm-channel rm-work-channel" aria-label="Зарабатывать с REZZKIY MARKET">
+  <div class="rm-channel-top">
+    <div class="rm-channel-avatar rm-work-avatar" aria-hidden="true">₽</div>
+    <div class="rm-channel-copy"><div class="rm-channel-name">Зарабатывай с REZZKIY MARKET</div><div class="rm-channel-handle">@rezzkiy_work · Telegram-канал</div><div class="rm-channel-subtitle">Возможности заработка · Новости</div></div>
+  </div>
+  <a class="rm-channel-cta" href="https://t.me/rezzkiy_work" target="_blank" rel="noopener noreferrer" onclick="if(window.Telegram?.WebApp?.openTelegramLink){event.preventDefault();window.Telegram.WebApp.openTelegramLink(this.href)}">Зарабатывать ↗</a>
 </aside>
 <div class="heading premium-heading"><h2>Популярные скины</h2><button class="outline" onclick="go('catalog')">Смотреть все →</button></div>
 <div id="popular" class="grid"></div></section>
@@ -907,6 +916,10 @@ const englishCopy={
  "@rezzkiy_market · Telegram-канал": "@rezzkiy_market · Telegram channel",
  "Новости · Новые скины · Акции": "News · New skins · Deals",
  "Подписаться на канал ↗": "Join the channel ↗",
+ "Зарабатывать с REZZKIY MARKET": "Earn with REZZKIY MARKET",
+ "@rezzkiy_work · Telegram-канал": "@rezzkiy_work · Telegram channel",
+ "Возможности заработка · Новости": "Earning opportunities · News",
+ "Зарабатывать ↗": "Earn ↗",
  "Популярные скины": "Popular skins",
  "Смотреть все →": "View all →",
  "Каталог скинов": "Skin catalog",
