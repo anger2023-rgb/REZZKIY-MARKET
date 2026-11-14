@@ -300,6 +300,7 @@ async function initDb(){
   await pool.query(`INSERT INTO supplier_pricing_settings(id,default_markup) VALUES(1,5) ON CONFLICT(id) DO NOTHING`);
   await pool.query(`ALTER TABLE supplier_pricing_settings ADD COLUMN IF NOT EXISTS usd_rub NUMERIC(12,4)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS buyout_pricing_settings(id INTEGER PRIMARY KEY CHECK(id=1),discount_percent NUMERIC(5,2) NOT NULL DEFAULT 25 CHECK(discount_percent>=0 AND discount_percent<=100))`);
+  await pool.query(`ALTER TABLE buyout_pricing_settings ADD COLUMN IF NOT EXISTS min_market_rub NUMERIC(12,2) NOT NULL DEFAULT 40 CHECK(min_market_rub>=0.01 AND min_market_rub<=1000000)`);
   await pool.query(`INSERT INTO buyout_pricing_settings(id,discount_percent) VALUES(1,25) ON CONFLICT(id) DO NOTHING`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_cost_usd_cents BIGINT`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_published BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -1430,9 +1431,25 @@ app.put('/api/admin/buyout-discount',admin,async(q,r)=>{
   try{await pool.query('UPDATE buyout_pricing_settings SET discount_percent=$1 WHERE id=1',[value]);r.json({discountPercent:value})}
   catch(e){console.error('Save buyout discount:',e);bad(r,500,'Ошибка сохранения процента выкупа')}
 });
+async function minMarketRub(){
+  const result=await pool.query('SELECT min_market_rub FROM buyout_pricing_settings WHERE id=1');
+  const value=Number(result.rows[0]?.min_market_rub);
+  if(!Number.isFinite(value)||value<0.01||value>1000000)throw Error('Invalid minimum market price');
+  return value;
+}
+app.get('/api/admin/buyout-minimum',admin,async(_q,r)=>{
+  try{r.set('Cache-Control','no-store');r.json({minMarketRub:await minMarketRub()})}
+  catch(e){console.error('Read buyout minimum:',e);bad(r,500,'Ошибка загрузки лимита выкупа')}
+});
+app.put('/api/admin/buyout-minimum',admin,async(q,r)=>{
+  const value=q.body?.minMarketRub;
+  if(typeof value!=='number'||!Number.isFinite(value)||value<0.01||value>1000000||Math.abs(value*100-Math.round(value*100))>1e-6)
+    return bad(r,400,'Лимит должен быть от 0,01 до 1 000 000 ₽ с точностью до копейки');
+  try{await pool.query('UPDATE buyout_pricing_settings SET min_market_rub=$1 WHERE id=1',[value]);r.json({minMarketRub:value})}
+  catch(e){console.error('Save buyout minimum:',e);bad(r,500,'Ошибка сохранения лимита выкупа')}
+});
 // Skinport public prices: server-side cached, never trust client quotations.
 const skinportCache={prices:new Map(),expires:0,inflight:null};
-const MIN_MARKET_RUB=40;
 
 function inventoryPriceKey(name){
   return String(name||'').trim().normalize('NFC');
@@ -1518,7 +1535,7 @@ async function sellReferencePrices(){
   console.info('[sell-pricing]',JSON.stringify({supplierNames:supplier?.size||0,backupNames:backup?.size||0,source:supplier?'BUYCS2+fallback':'Skinport fallback'}));
   return prices;
 }
-function quoteInventory(items,prices,discountPercent){
+function quoteInventory(items,prices,discountPercent,minimumMarketRub){
   const buyoutRate=1-discountPercent/100;
   const stats={tradable:items.length,excluded:0,unpriced:0,belowMinimum:0,eligible:0};
   // Only aggregated item types are logged: no Steam IDs, inventory names, or secrets.
@@ -1538,7 +1555,7 @@ function quoteInventory(items,prices,discountPercent){
     }
     const market=prices.get(inventoryPriceKey(item.name));
     if(!Number.isFinite(market)||market<=0){stats.unpriced++;summarize(unpricedByType,item.type);continue;}
-    if(market<MIN_MARKET_RUB){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
+    if(market<minimumMarketRub){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     const buyout=Math.floor(market*buyoutRate*100)/100;
     if(buyout<=0){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     quoted.push({...item,market_rub:market,buyout_rub:buyout});
@@ -1547,9 +1564,9 @@ function quoteInventory(items,prices,discountPercent){
   }
   return {items:quoted,stats,categoryDiagnostics:{excludedByType,belowMinimumByType,unpricedByType,eligibleByType}};
 }
-function inventoryResponse(inventory,prices,discountPercent){
+function inventoryResponse(inventory,prices,discountPercent,minimumMarketRub){
   const {items,totalAssets,nonTradable,missingDescriptions}=inventory;
-  const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices,discountPercent);
+  const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices,discountPercent,minimumMarketRub);
   // An inventory with unpriced items is not proven to contain no qualifying skins.
   let state='ready';
   if(!quoted.length){
@@ -1561,7 +1578,7 @@ function inventoryResponse(inventory,prices,discountPercent){
   }
   console.info('[sell-inventory] evaluated',JSON.stringify(stats), 'state='+state);
   console.info('[sell-inventory] categories',JSON.stringify(categoryDiagnostics));
-  return {items:quoted,count:quoted.length,rate:1-discountPercent/100,minMarketRub:MIN_MARKET_RUB,state,
+  return {items:quoted,count:quoted.length,rate:1-discountPercent/100,minMarketRub:minimumMarketRub,state,
     stats:{...stats,totalAssets,nonTradable,missingDescriptions}};
 }
 const inventoryCache=new Map();
@@ -1737,7 +1754,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached.expires>Date.now()
     ){
       const prices=cached.items.length?await sellReferencePrices():new Map();
-      return r.json(inventoryResponse(cached,prices,await buyoutDiscount()));
+      return r.json(inventoryResponse(cached,prices,await buyoutDiscount(),await minMarketRub()));
     }
 
     if(
@@ -1760,7 +1777,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
     );
 
     const prices=inventory.items.length?await sellReferencePrices():new Map();
-    r.json(inventoryResponse(inventory,prices,await buyoutDiscount()));
+    r.json(inventoryResponse(inventory,prices,await buyoutDiscount(),await minMarketRub()));
   }catch(e){
     console.warn('[sell-inventory] load failed',JSON.stringify({type:e.name||'Error',status:e.status||502,reason:String(e.message||'Unknown').slice(0,120)}));
     bad(r,e.status||502,e.message||'Ошибка загрузки инвентаря');
@@ -1809,7 +1826,7 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
     // Reprice on the server immediately before accepting an order.
     const prices=await sellReferencePrices();
-    const {items:quoted}=quoteInventory(items,prices,await buyoutDiscount());
+    const {items:quoted}=quoteInventory(items,prices,await buyoutDiscount(),await minMarketRub());
     if(quoted.length!==items.length)return bad(r,409,'Цена изменилась. Обнови инвентарь');
     const totalKopecks=quoted.reduce((sum,item)=>sum+Math.round(item.buyout_rub*100)*Number(item.amount||1),0);
     const offer=Math.floor(totalKopecks/100);
