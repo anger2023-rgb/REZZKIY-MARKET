@@ -399,6 +399,8 @@ async function initDb(){
     ON CONFLICT(id) DO NOTHING
   `);
 
+  await pool.query(`ALTER TABLE usdt_settings ADD COLUMN IF NOT EXISTS rub_telegram TEXT NOT NULL DEFAULT 'rezzkiy_support'`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS usdt_orders(
       id BIGSERIAL PRIMARY KEY,
@@ -2937,6 +2939,29 @@ function validUsdtAddress(network,address){
 
   return false;
 }
+
+app.get('/api/payment/rub-settings',async(_q,r)=>{
+  try{
+    const x=await pool.query('SELECT rub_telegram FROM usdt_settings WHERE id=1');
+    r.set('Cache-Control','no-store');
+    r.json({telegram:x.rows[0]?.rub_telegram||'rezzkiy_support'});
+  }catch(e){console.error('RUB payment settings:',e);bad(r,500,'Ошибка настроек оплаты рублями')}
+});
+app.get('/api/admin/payment/rub-settings',admin,async(_q,r)=>{
+  try{
+    const x=await pool.query('SELECT rub_telegram FROM usdt_settings WHERE id=1');
+    r.set('Cache-Control','no-store');
+    r.json({telegram:x.rows[0]?.rub_telegram||'rezzkiy_support'});
+  }catch(e){console.error('RUB admin settings:',e);bad(r,500,'Ошибка настроек оплаты рублями')}
+});
+app.put('/api/admin/payment/rub-settings',admin,async(q,r)=>{
+  const telegram=String(q.body?.telegram||'').trim().replace(/^@/,'');
+  if(!/^[a-zA-Z0-9_]{5,32}$/.test(telegram))return bad(r,400,'Укажи Telegram username (5–32 символа, буквы, цифры или _)');
+  try{
+    await pool.query('UPDATE usdt_settings SET rub_telegram=$1,updated_at=NOW() WHERE id=1',[telegram]);
+    r.json({telegram});
+  }catch(e){console.error('Save RUB admin settings:',e);bad(r,500,'Не удалось сохранить Telegram')}
+});
 
 app.get('/api/admin/payment-settings',admin,async(q,r)=>{
   try{
