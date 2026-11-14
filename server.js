@@ -299,6 +299,8 @@ async function initDb(){
   )`);
   await pool.query(`INSERT INTO supplier_pricing_settings(id,default_markup) VALUES(1,5) ON CONFLICT(id) DO NOTHING`);
   await pool.query(`ALTER TABLE supplier_pricing_settings ADD COLUMN IF NOT EXISTS usd_rub NUMERIC(12,4)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS buyout_pricing_settings(id INTEGER PRIMARY KEY CHECK(id=1),discount_percent NUMERIC(5,2) NOT NULL DEFAULT 25 CHECK(discount_percent>=0 AND discount_percent<=100))`);
+  await pool.query(`INSERT INTO buyout_pricing_settings(id,discount_percent) VALUES(1,25) ON CONFLICT(id) DO NOTHING`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_cost_usd_cents BIGINT`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_published BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_market_hash_name TEXT`);
@@ -1410,10 +1412,28 @@ app.get('/api/steam/me',user,async(q,r)=>{
   }
 });
 
+// Admin-controlled buyout discount, stored in PostgreSQL.
+async function buyoutDiscount(){
+  const result=await pool.query('SELECT discount_percent FROM buyout_pricing_settings WHERE id=1');
+  const value=Number(result.rows[0]?.discount_percent);
+  if(!Number.isFinite(value)||value<0||value>100)throw Error('Invalid buyout discount');
+  return value;
+}
+app.get('/api/admin/buyout-discount',admin,async(_q,r)=>{
+  try{r.set('Cache-Control','no-store');r.json({discountPercent:await buyoutDiscount()})}
+  catch(e){console.error('Read buyout discount:',e);bad(r,500,'Ошибка загрузки процента выкупа')}
+});
+app.put('/api/admin/buyout-discount',admin,async(q,r)=>{
+  const value=q.body?.discountPercent;
+  if(typeof value!=='number'||!Number.isFinite(value)||value<0||value>100||Math.round(value*100)!==Math.round(value*10000)/100)
+    return bad(r,400,'Процент должен быть от 0 до 100 с точностью 0,01');
+  try{await pool.query('UPDATE buyout_pricing_settings SET discount_percent=$1 WHERE id=1',[value]);r.json({discountPercent:value})}
+  catch(e){console.error('Save buyout discount:',e);bad(r,500,'Ошибка сохранения процента выкупа')}
+});
 // Skinport public prices: server-side cached, never trust client quotations.
 const skinportCache={prices:new Map(),expires:0,inflight:null};
 const MIN_MARKET_RUB=40;
-const BUYOUT_RATE=.75;
+
 function inventoryPriceKey(name){
   return String(name||'').trim().normalize('NFC');
 }
@@ -1448,7 +1468,8 @@ async function skinportPrices(){
   catch(e){if(skinportCache.prices.size&&skinportCache.expires+9*60*1000>Date.now())return skinportCache.prices;throw e}
   finally{skinportCache.inflight=null}
 }
-function quoteInventory(items,prices){
+function quoteInventory(items,prices,discountPercent){
+  const buyoutRate=1-discountPercent/100;
   const stats={tradable:items.length,excluded:0,unpriced:0,belowMinimum:0,eligible:0};
   // Only aggregated item types are logged: no Steam IDs, inventory names, or secrets.
   const excludedByType=Object.create(null);
@@ -1468,7 +1489,7 @@ function quoteInventory(items,prices){
     const market=prices.get(inventoryPriceKey(item.name));
     if(!Number.isFinite(market)||market<=0){stats.unpriced++;summarize(unpricedByType,item.type);continue;}
     if(market<MIN_MARKET_RUB){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
-    const buyout=Math.floor(market*BUYOUT_RATE*100)/100;
+    const buyout=Math.floor(market*buyoutRate*100)/100;
     if(buyout<=0){stats.belowMinimum++;summarize(belowMinimumByType,item.type);continue;}
     quoted.push({...item,market_rub:market,buyout_rub:buyout});
     summarize(eligibleByType,item.type);
@@ -1476,9 +1497,9 @@ function quoteInventory(items,prices){
   }
   return {items:quoted,stats,categoryDiagnostics:{excludedByType,belowMinimumByType,unpricedByType,eligibleByType}};
 }
-function inventoryResponse(inventory,prices){
+function inventoryResponse(inventory,prices,discountPercent){
   const {items,totalAssets,nonTradable,missingDescriptions}=inventory;
-  const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices);
+  const {items:quoted,stats,categoryDiagnostics}=quoteInventory(items,prices,discountPercent);
   // An inventory with unpriced items is not proven to contain no qualifying skins.
   let state='ready';
   if(!quoted.length){
@@ -1490,7 +1511,7 @@ function inventoryResponse(inventory,prices){
   }
   console.info('[sell-inventory] evaluated',JSON.stringify(stats), 'state='+state);
   console.info('[sell-inventory] categories',JSON.stringify(categoryDiagnostics));
-  return {items:quoted,count:quoted.length,rate:BUYOUT_RATE,minMarketRub:MIN_MARKET_RUB,state,
+  return {items:quoted,count:quoted.length,rate:1-discountPercent/100,minMarketRub:MIN_MARKET_RUB,state,
     stats:{...stats,totalAssets,nonTradable,missingDescriptions}};
 }
 const inventoryCache=new Map();
@@ -1666,7 +1687,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached.expires>Date.now()
     ){
       const prices=cached.items.length?await skinportPrices():new Map();
-      return r.json(inventoryResponse(cached,prices));
+      return r.json(inventoryResponse(cached,prices,await buyoutDiscount()));
     }
 
     if(
@@ -1689,7 +1710,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
     );
 
     const prices=inventory.items.length?await skinportPrices():new Map();
-    r.json(inventoryResponse(inventory,prices));
+    r.json(inventoryResponse(inventory,prices,await buyoutDiscount()));
   }catch(e){
     console.warn('[sell-inventory] load failed',JSON.stringify({type:e.name||'Error',status:e.status||502,reason:String(e.message||'Unknown').slice(0,120)}));
     bad(r,e.status||502,e.message||'Ошибка загрузки инвентаря');
@@ -1738,7 +1759,7 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
     // Reprice on the server immediately before accepting an order.
     const prices=await skinportPrices();
-    const {items:quoted}=quoteInventory(items,prices);
+    const {items:quoted}=quoteInventory(items,prices,await buyoutDiscount());
     if(quoted.length!==items.length)return bad(r,409,'Цена изменилась. Обнови инвентарь');
     const totalKopecks=quoted.reduce((sum,item)=>sum+Math.round(item.buyout_rub*100)*Number(item.amount||1),0);
     const offer=Math.floor(totalKopecks/100);
