@@ -711,17 +711,39 @@ app.get('/api/admin/supplier-markup',admin,async(_q,r)=>{
     r.set('Cache-Control','no-store');r.json({defaultMarkup:Number(x.rows[0].default_markup)})
   }catch(e){console.error('Read supplier markup:',e);bad(r,500,'Не удалось загрузить наценку')}
 });
+// Reprice in bounded batches to avoid one massive UPDATE on large supplier catalogs.
+async function repriceSupplierProducts(client, markup, rate=null){
+  let lastId=0, updated=0;
+  for(;;){
+    const ids=await client.query(`SELECT id FROM products
+      WHERE id>$1 AND source_type='SUPPLIER' AND base_cost_rub IS NOT NULL
+        AND markup_override IS NULL ORDER BY id LIMIT 500`,[lastId]);
+    if(!ids.rows.length)break;
+    lastId=Number(ids.rows[ids.rows.length-1].id);
+    const result=await client.query(`UPDATE products SET
+      base_cost_rub=CASE WHEN $2::numeric IS NOT NULL AND supplier_code='BUYCS2' AND supplier_cost_usd_cents>0
+        THEN CEIL(supplier_cost_usd_cents*$2::numeric/100)::integer ELSE base_cost_rub END,
+      price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(
+        (CASE WHEN $2::numeric IS NOT NULL AND supplier_code='BUYCS2' AND supplier_cost_usd_cents>0
+          THEN CEIL(supplier_cost_usd_cents*$2::numeric/100) ELSE base_cost_rub END)
+        *(1+$3::numeric/100))))::integer
+      WHERE id=ANY($1::integer[])`,[ids.rows.map(x=>x.id),rate,markup]);
+    updated+=result.rowCount;
+  }
+  return updated;
+}
 app.put('/api/admin/supplier-markup',admin,async(q,r)=>{
   const value=q.body?.markup;
   if(!validMarkup(value))return bad(r,400,'Наценка должна быть от 0 до 500% с точностью 0,01%');
-  const client=await pool.connect();
-  try{await client.query('BEGIN');
+  let client;
+  try{
+    client=await pool.connect();
+    await client.query('BEGIN');
     await client.query('UPDATE supplier_pricing_settings SET default_markup=$1 WHERE id=1',[value]);
-    await client.query(`UPDATE products SET price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(base_cost_rub*(1+$1::numeric/100))))::integer
-      WHERE source_type='SUPPLIER' AND base_cost_rub IS NOT NULL AND markup_override IS NULL`,[value]);
-    await client.query('COMMIT');r.json({defaultMarkup:value});
-  }catch(e){await client.query('ROLLBACK');console.error('Save supplier markup:',e);bad(r,500,'Не удалось сохранить наценку')}
-  finally{client.release()}
+    const updated=await repriceSupplierProducts(client,value);
+    await client.query('COMMIT');r.json({defaultMarkup:value,updated});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});console.error('Save supplier markup:',e);bad(r,500,'Не удалось сохранить наценку (проверь логи Railway)')}
+  finally{if(client)client.release()}
 });
 // Bulk publication is scoped to one exact weapon across all supplier pages.
 const supplierGroupScope="source_type='SUPPLIER' AND supplier_code='BUYCS2'";
@@ -843,10 +865,31 @@ app.get('/api/admin/buycs2/import-settings',admin,async(_q,r)=>{
 });
 app.put('/api/admin/buycs2/import-settings',admin,async(q,r)=>{
   const rate=q.body?.usdRub;
-  if(typeof rate!=='number'||!Number.isFinite(rate)||rate<1||rate>1000||Math.round(rate*10000)!==rate*10000)
+  if(typeof rate!=='number'||!Number.isFinite(rate)||rate<1||rate>1000||Math.abs(Math.round(rate*10000)-rate*10000)>0.000001)
     return bad(r,400,'Укажи курс USD/RUB от 1 до 1000, до 4 знаков после запятой');
-  try{await pool.query('UPDATE supplier_pricing_settings SET usd_rub=$1 WHERE id=1',[rate]);r.json({usdRub:rate})}
-  catch(e){console.error('Save rate:',e);bad(r,500,'Не удалось сохранить курс')}
+  let client;
+  try{
+    client=await pool.connect();await client.query('BEGIN');
+    await client.query('UPDATE supplier_pricing_settings SET usd_rub=$1 WHERE id=1',[rate]);
+    const markupResult=await client.query('SELECT default_markup FROM supplier_pricing_settings WHERE id=1');
+    const markup=Number(markupResult.rows[0].default_markup);
+    // Recalculate both default-markup and custom-markup supplier listings from original USD cents.
+    let lastId=0,updated=0;
+    for(;;){
+      const ids=await client.query(`SELECT id FROM products WHERE id>$1 AND source_type='SUPPLIER'
+        AND supplier_code='BUYCS2' AND supplier_cost_usd_cents>0 ORDER BY id LIMIT 500`,[lastId]);
+      if(!ids.rows.length)break;
+      lastId=Number(ids.rows[ids.rows.length-1].id);
+      const result=await client.query(`UPDATE products SET
+        base_cost_rub=CEIL(supplier_cost_usd_cents*$2::numeric/100)::integer,
+        price=LEAST(2147483647::numeric,GREATEST(1::numeric,CEIL(
+          CEIL(supplier_cost_usd_cents*$2::numeric/100)*(1+COALESCE(markup_override,$3::numeric)/100))))::integer
+        WHERE id=ANY($1::integer[])`,[ids.rows.map(x=>x.id),rate,markup]);
+      updated+=result.rowCount;
+    }
+    await client.query('COMMIT');r.json({usdRub:rate,updated});
+  }catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});console.error('Save rate:',e);bad(r,500,'Не удалось сохранить курс (проверь логи Railway)')}
+  finally{if(client)client.release()}
 });
 const buycs2ImportState={
   running:false,status:'idle',message:'Импорт ещё не запускался',imported:0,total:0,usdRub:null,
