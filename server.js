@@ -1468,6 +1468,56 @@ async function skinportPrices(){
   catch(e){if(skinportCache.prices.size&&skinportCache.expires+9*60*1000>Date.now())return skinportCache.prices;throw e}
   finally{skinportCache.inflight=null}
 }
+// Supplier sale listings are reference prices, NOT guaranteed supplier buyback bids.
+const buycs2SellPriceCache={prices:new Map(),expires:0,inflight:null};
+async function buycs2ReferencePrices(){
+  if(buycs2SellPriceCache.expires>Date.now()&&buycs2SellPriceCache.prices.size)return buycs2SellPriceCache.prices;
+  if(buycs2SellPriceCache.inflight)return buycs2SellPriceCache.inflight;
+  buycs2SellPriceCache.inflight=(async()=>{
+    const merchantId=process.env.BUYCS2_MERCHANT_ID?.trim();
+    const apiKey=process.env.BUYCS2_API_KEY?.trim();
+    if(!merchantId||!apiKey)throw Error('BuyCS2 API credentials missing');
+    const result=await pool.query('SELECT usd_rub FROM supplier_pricing_settings WHERE id=1');
+    const usdRub=Number(result.rows[0]?.usd_rub);
+    if(!Number.isFinite(usdRub)||usdRub<=0)throw Error('BuyCS2 USD/RUB exchange rate missing');
+    const response=await fetch('https://api.buycs2.com/Items/GetAllItemsOnSale',{
+      headers:{'x-merchant-id':merchantId,'x-api-key':apiKey,'Accept':'application/json','Accept-Encoding':'gzip'},
+      signal:AbortSignal.timeout(90000)
+    });
+    if(!response.ok)throw Error('BuyCS2 pricing HTTP '+response.status);
+    const payload=await response.json();
+    if(!Array.isArray(payload?.items))throw Error('Invalid BuyCS2 pricing response');
+    if(Number.isSafeInteger(payload.totalItems)&&payload.totalItems!==payload.items.length)throw Error('Incomplete BuyCS2 price catalog');
+    const prices=new Map();
+    for(const item of payload.items){
+      const name=inventoryPriceKey(item?.market_hash_name);
+      const cents=Number(item?.price);
+      if(!name||!Number.isSafeInteger(cents)||cents<=0)continue;
+      const rub=Math.round(cents*usdRub)/100;
+      if(!Number.isFinite(rub)||rub<=0)continue;
+      const previous=prices.get(name);
+      if(previous===undefined||rub<previous)prices.set(name,rub);
+    }
+    if(!prices.size)throw Error('BuyCS2 returned no valid prices');
+    buycs2SellPriceCache.prices=prices;
+    buycs2SellPriceCache.expires=Date.now()+6*60*1000;
+    return prices;
+  })();
+  try{return await buycs2SellPriceCache.inflight}
+  catch(e){if(buycs2SellPriceCache.prices.size&&buycs2SellPriceCache.expires+9*60*1000>Date.now())return buycs2SellPriceCache.prices;throw e}
+  finally{buycs2SellPriceCache.inflight=null}
+}
+async function sellReferencePrices(){
+  // Prefer BuyCS2. Supplement missing names with Skinport without overriding supplier prices.
+  const results=await Promise.allSettled([buycs2ReferencePrices(),skinportPrices()]);
+  const supplier=results[0].status==='fulfilled'?results[0].value:null;
+  const backup=results[1].status==='fulfilled'?results[1].value:null;
+  if(!supplier&&!backup)throw Error('BuyCS2 and Skinport pricing unavailable');
+  const prices=new Map(backup||[]);
+  for(const [name,price] of supplier||[])prices.set(name,price);
+  console.info('[sell-pricing]',JSON.stringify({supplierNames:supplier?.size||0,backupNames:backup?.size||0,source:supplier?'BUYCS2+fallback':'Skinport fallback'}));
+  return prices;
+}
 function quoteInventory(items,prices,discountPercent){
   const buyoutRate=1-discountPercent/100;
   const stats={tradable:items.length,excluded:0,unpriced:0,belowMinimum:0,eligible:0};
@@ -1686,7 +1736,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       cached?.steamId===id&&
       cached.expires>Date.now()
     ){
-      const prices=cached.items.length?await skinportPrices():new Map();
+      const prices=cached.items.length?await sellReferencePrices():new Map();
       return r.json(inventoryResponse(cached,prices,await buyoutDiscount()));
     }
 
@@ -1709,7 +1759,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
       }
     );
 
-    const prices=inventory.items.length?await skinportPrices():new Map();
+    const prices=inventory.items.length?await sellReferencePrices():new Map();
     r.json(inventoryResponse(inventory,prices,await buyoutDiscount()));
   }catch(e){
     console.warn('[sell-inventory] load failed',JSON.stringify({type:e.name||'Error',status:e.status||502,reason:String(e.message||'Unknown').slice(0,120)}));
@@ -1758,7 +1808,7 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
     }
 
     // Reprice on the server immediately before accepting an order.
-    const prices=await skinportPrices();
+    const prices=await sellReferencePrices();
     const {items:quoted}=quoteInventory(items,prices,await buyoutDiscount());
     if(quoted.length!==items.length)return bad(r,409,'Цена изменилась. Обнови инвентарь');
     const totalKopecks=quoted.reduce((sum,item)=>sum+Math.round(item.buyout_rub*100)*Number(item.amount||1),0);
