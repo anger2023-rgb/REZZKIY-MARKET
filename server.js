@@ -811,7 +811,11 @@ app.patch('/api/admin/supplier-products/bulk-visibility',admin,async(q,r)=>{
   const published=q.body?.published;
   if(typeof published!=='boolean')return bad(r,400,'Укажи действие публикации');
   const condition=published
-    ? `${supplierGroupAvailable} AND supplier_published IS DISTINCT FROM TRUE`
+    ? `${supplierGroupAvailable} AND supplier_published IS DISTINCT FROM TRUE
+       AND NOT EXISTS (SELECT 1 FROM products cheaper
+         WHERE cheaper.source_type='SUPPLIER' AND cheaper.supplier_code='BUYCS2'
+           AND cheaper.quantity>0 AND cheaper.supplier_market_hash_name=products.supplier_market_hash_name
+           AND (cheaper.supplier_cost_usd_cents,cheaper.id)<(products.supplier_cost_usd_cents,products.id))`
     : 'supplier_published=TRUE';
   try{
     const result=await pool.query(`WITH batch AS (
@@ -949,6 +953,15 @@ async function runBuycs2Import(){
       rows.push({listingId,assetId:item.assetId,market_hash_name:item.market_hash_name.trim(),weapon:name.weapon.slice(0,120),category:categoryOf(name.weapon)||'OTHER',skin:name.skin.slice(0,240),condition:name.condition,
         image_url:img,base_cost_rub:cost,usd_cents:item.price});
     }
+    // One representative listing per exact Steam market name (includes wear,
+    // StatTrak, phases, etc.). Keep the cheapest currently offered asset.
+    const cheapestByName=new Map();
+    for(const row of rows){
+      const previous=cheapestByName.get(row.market_hash_name);
+      if(!previous||row.usd_cents<previous.usd_cents)cheapestByName.set(row.market_hash_name,row);
+    }
+    rows.length=0;
+    rows.push(...cheapestByName.values());
     if(!rows.length)throw Error('В каталоге BuyCS2 не найдено подходящих товаров');
     setBuycs2ImportState({status:'saving',message:'Записываем '+rows.length+' товаров в черновики...',total:rows.length});
     const client=await pool.connect();
@@ -975,8 +988,19 @@ async function runBuycs2Import(){
         saved=Math.min(i+250,rows.length);
         setBuycs2ImportState({imported:saved,message:'Записано '+saved+' из '+rows.length+'...'});
       }
-      await client.query(`UPDATE products SET quantity=0 WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
-        AND NOT (supplier_listing_id=ANY($1::text[]))`,[rows.map(x=>x.listingId)]);
+      // Retire old duplicate supplier assets without deleting historical order
+      // references. Only one cheapest listing per exact market name stays active.
+      await client.query(`UPDATE products SET quantity=0,supplier_published=FALSE
+        WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
+          AND NOT (supplier_listing_id=ANY($1::text[]))`,[rows.map(x=>x.listingId)]);
+      // Keep at most one published listing per name even after a changed supplier ID.
+      await client.query(`WITH ranked AS (
+        SELECT id,ROW_NUMBER() OVER (
+          PARTITION BY supplier_market_hash_name ORDER BY supplier_cost_usd_cents ASC,id ASC
+        ) AS rn FROM products WHERE source_type='SUPPLIER' AND supplier_code='BUYCS2'
+          AND quantity>0 AND supplier_market_hash_name IS NOT NULL
+      ) UPDATE products p SET supplier_published=FALSE,quantity=0
+        FROM ranked WHERE p.id=ranked.id AND ranked.rn>1`);
       await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
     setBuycs2ImportState({running:false,status:'done',message:'Черновики BuyCS2 обновлены',imported:rows.length,total:rows.length,
