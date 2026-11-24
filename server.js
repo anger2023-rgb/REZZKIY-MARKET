@@ -538,7 +538,7 @@ async function initDb(){
   await pool.query(`
     ALTER TABLE usdt_orders
     ADD CONSTRAINT usdt_orders_network_check
-    CHECK(network IN ('TRC20','BEP20','BALANCE','RUB','CRYPTOPAY'))
+    CHECK(network IN ('TRC20','BEP20','BALANCE','RUB','CRYPTOPAY','EXPRESS'))
   `);
 
   await pool.query(`
@@ -601,6 +601,7 @@ async function initDb(){
     pay_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
   )`);
+  await pool.query("ALTER TABLE usdt_orders ADD COLUMN IF NOT EXISTS express_id TEXT UNIQUE, ADD COLUMN IF NOT EXISTS express_ref TEXT UNIQUE, ADD COLUMN IF NOT EXISTS express_url TEXT");
   await pool.query("ALTER TABLE usdt_settings ADD COLUMN IF NOT EXISTS checkout_provider TEXT NOT NULL DEFAULT 'wallet'");
   await pool.query("ALTER TABLE usdt_orders ADD COLUMN IF NOT EXISTS crypto_invoice_id BIGINT UNIQUE, ADD COLUMN IF NOT EXISTS crypto_pay_url TEXT");
   console.log('Database ready');
@@ -1952,11 +1953,9 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
 app.get('/api/sell/requests',user,async(q,r)=>{
   try{
-    const pending=await pool.query("SELECT crypto_invoice_id FROM usdt_orders WHERE telegram_id=$1 AND network='CRYPTOPAY' AND status='awaiting' AND crypto_invoice_id IS NOT NULL ORDER BY id DESC LIMIT 10",[q.telegramUser.id]);
-    await Promise.allSettled(pending.rows.map(x=>cryptoLiveReconcile(x.crypto_invoice_id)));
     const x=await pool.query(
       `SELECT
-        id,crypto_pay_url,
+        id,
         items,
         status,
         offer_rub,
@@ -3399,13 +3398,13 @@ app.patch('/api/admin/deals/:id/status',admin,async(q,r)=>{
 /* USDT invoice and order routes */
 
 app.get('/api/checkout-provider',async(_q,r)=>{try{const x=await pool.query('SELECT checkout_provider FROM usdt_settings WHERE id=1');r.set('Cache-Control','no-store').json({provider:x.rows[0]?.checkout_provider||'wallet'})}catch(e){bad(r,500,'Настройки недоступны')}});
-app.put('/api/checkout-provider',admin,async(q,r)=>{const p=q.body?.provider;if(!['wallet','cryptopay'].includes(p))return bad(r,400,'Неверный способ');try{if(p==='cryptopay')await cryptoPayCall('getMe',{},false);await pool.query('UPDATE usdt_settings SET checkout_provider=$1 WHERE id=1',[p]);r.json({provider:p})}catch(e){bad(r,502,'Не удалось сохранить способ оплаты')}});
+app.put('/api/checkout-provider',admin,async(q,r)=>{const p=q.body?.provider;if(!['wallet','cryptopay','express'].includes(p))return bad(r,400,'Неверный способ');try{if(p==='express'){const m=await expressCall('/me');if(m.test!==false||m.status!=='active'||m.sbp_status==='approved')throw Error('Express unavailable or SBP enabled');}if(p==='cryptopay')await cryptoPayCall('getMe',{},false);await pool.query('UPDATE usdt_settings SET checkout_provider=$1 WHERE id=1',[p]);r.json({provider:p})}catch(e){bad(r,502,'Не удалось сохранить способ оплаты')}});
 app.post('/api/orders/usdt',user,async(q,r)=>{
   const ids=q.body?.productIds;
   let network=q.body?.network;
 
   if(
-    !['TRC20','BEP20','CRYPTOPAY'].includes(network)||
+    !['TRC20','BEP20','CRYPTOPAY','EXPRESS'].includes(network)||
     !Array.isArray(ids)||
     ids.length<1||
     ids.length>50||
@@ -3433,12 +3432,12 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       return bad(r,503,'Настройки USDT недоступны');
     }
 
-    if ((config.checkout_provider==='cryptopay') !== (network==='CRYPTOPAY')) { await client.query('ROLLBACK'); return bad(r,409,'Способ оплаты изменился. Открой корзину заново'); }
-    const address=network==='CRYPTOPAY'?'':network==='TRC20'
+    if ((config.checkout_provider||'wallet') !== (network==='CRYPTOPAY'?'cryptopay':network==='EXPRESS'?'express':'wallet')) { await client.query('ROLLBACK'); return bad(r,409,'Способ оплаты изменился. Открой корзину заново'); }
+    const address=['CRYPTOPAY','EXPRESS'].includes(network)?'':network==='TRC20'
       ?config.trc20_address
       :config.bep20_address?.toLowerCase();
 
-    if(network!=='CRYPTOPAY'&&!validUsdtAddress(network,address)){
+    if(!['CRYPTOPAY','EXPRESS'].includes(network)&&!validUsdtAddress(network,address)){
       await client.query('ROLLBACK');
       return bad(r,409,'Кошелёк этой сети ещё не настроен');
     }
@@ -3552,6 +3551,14 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       ]
     );
 
+    if(network==='EXPRESS'){
+      const ref='rm-'+crypto.randomUUID(), amount=(amountCents/100).toFixed(2);
+      const inv=await expressCall('/invoices',{amount,currency:'USDT',order_id:ref,description:'REZZKIY MARKET',ttl_minutes:30});
+      const url=new URL(inv.pay_urls?.crypto||inv.pay_url);
+      if(inv.test!==false||inv.order_id!==ref||inv.price_currency!=='USDT'||Number(inv.price)!==Number(amount)||inv.status!=='open'||!inv.id||url.origin!=='https://oplata.express'||inv.pay_urls?.sbp)throw Error('Invalid Express invoice');
+      await client.query('UPDATE usdt_orders SET express_id=$1,express_ref=$2,express_url=$3 WHERE id=$4',[inv.id,ref,url.href,order.rows[0].id]);
+      order.rows[0].express_url=url.href;
+    }
     if(network==='CRYPTOPAY'){
       const amount=(amountCents/100).toFixed(2),payload=crypto.randomUUID();
       const invoice=await cryptoPayCall('createInvoice',{asset:'USDT',amount,payload,expires_in:1800,allow_anonymous:false},false);
@@ -3662,7 +3669,7 @@ app.post('/api/orders/:id/reported',user,async(q,r)=>{
            reported_at=NOW()
        WHERE id=$1
          AND telegram_id=$2
-         AND status='awaiting' AND order_kind='purchase' AND network<>'CRYPTOPAY'
+         AND status='awaiting' AND order_kind='purchase' AND network NOT IN ('CRYPTOPAY','EXPRESS')
        RETURNING id,status,reported_at`,
       [q.params.id,q.telegramUser.id]
     );
@@ -3974,9 +3981,13 @@ app.put('/api/cart',user,async(q,r)=>{
 
 app.get('/api/orders/my',user,async(q,r)=>{
   try{
+    const pending=await pool.query("SELECT crypto_invoice_id FROM usdt_orders WHERE telegram_id=$1 AND network='CRYPTOPAY' AND status='awaiting' AND crypto_invoice_id IS NOT NULL ORDER BY id DESC LIMIT 10",[q.telegramUser.id]);
+    await Promise.allSettled(pending.rows.map(x=>cryptoLiveReconcile(x.crypto_invoice_id)));
+    const ep=await pool.query("SELECT express_id FROM usdt_orders WHERE telegram_id=$1 AND network='EXPRESS' AND status='awaiting' AND express_id IS NOT NULL ORDER BY id DESC LIMIT 10",[q.telegramUser.id]);
+    await Promise.allSettled(ep.rows.map(x=>expressReconcile(x.express_id)));
     const x=await pool.query(
       `SELECT
-        id,
+        id,crypto_pay_url,express_url,
         items,
         total_rub,
         rate_kopecks,
@@ -4048,6 +4059,12 @@ async function cryptoPayCall(method,params={},test=false){
   }
   return data.result;
 }
+function expressToken(){const t=process.env.OPLATA_EXPRESS_API_KEY?.trim();if(!t?.startsWith('eo_live_'))throw Error('Express live token required');return t}
+async function expressCall(path,body){const resp=await fetch('https://oplata.express/v1'+path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+expressToken(),'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(7000),redirect:'error'});if(!resp.ok)throw Error('Express HTTP '+resp.status);return resp.json()}
+async function expressApply(inv){if(inv.test!==false||inv.status!=='paid'||inv.price_currency!=='USDT'||inv.payment_method==='sbp')return;await pool.query("UPDATE usdt_orders SET status='paid',reviewed_at=NOW() WHERE network='EXPRESS' AND status='awaiting' AND express_id=$1 AND express_ref=$2 AND amount_cents=$3",[inv.id,inv.order_id,Math.round(Number(inv.price)*100)])}
+async function expressReconcile(id){const inv=await expressCall('/invoices/'+encodeURIComponent(id));if(inv.id!==id)throw Error('Express mismatch');await expressApply(inv)}
+app.post('/api/webhooks/expressoplata',async(q,r)=>{try{const parts=(q.get('ExpressOplata-Signature')||'').split(',').map(x=>x.trim());const t=parts.find(x=>x.startsWith('t='))?.slice(2);if(!q.rawBody||!/^\d+$/.test(t||'')||Math.abs(Date.now()/1000-Number(t))>300)return r.sendStatus(401);const mac=crypto.createHmac('sha256',crypto.createHash('sha256').update(expressToken()).digest()).update(t+'.').update(q.rawBody).digest();if(!parts.some(x=>/^v1=[a-f0-9]{64}$/i.test(x)&&crypto.timingSafeEqual(mac,Buffer.from(x.slice(3),'hex'))))return r.sendStatus(401);if(q.get('ExpressOplata-Event-Id')!==q.body?.id)return r.sendStatus(400);if(q.body?.type==='invoice.paid'&&q.body.test===false)await expressApply(q.body.data);return r.sendStatus(200)}catch(e){return r.sendStatus(503)}});
+
 async function cryptoLiveReconcile(id){
   const local=(await pool.query('SELECT * FROM crypto_pay_live_invoices WHERE invoice_id=$1',[id])).rows[0];
   if(!local)return null;
