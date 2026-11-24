@@ -260,6 +260,9 @@ function publicPayment(row){
 }
 
 async function initDb(){
+  await pool.query(`CREATE TABLE IF NOT EXISTS market_sale_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled BOOLEAN NOT NULL DEFAULT TRUE)`);
+  await pool.query(`INSERT INTO market_sale_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS products(
       id BIGSERIAL PRIMARY KEY,
@@ -626,6 +629,22 @@ async function registerMarketUser(u){
     ]
   );
 }
+
+async function saleEnabled(){
+  const x=await pool.query('SELECT enabled FROM market_sale_settings WHERE id=1');
+  return x.rows[0]?.enabled===true;
+}
+async function requireSaleEnabled(q,r,next){
+  try{if(!await saleEnabled())return bad(r,403,'Продажа скинов временно отключена');next()}
+  catch(e){bad(r,503,'Не удалось проверить доступность продажи')}
+}
+app.get('/api/sale-availability',async(q,r)=>{
+  try{r.set('Cache-Control','no-store');r.json({enabled:await saleEnabled()})}catch(e){bad(r,503,'Ошибка настроек продажи')}
+});
+app.put('/api/admin/sale-availability',admin,async(q,r)=>{
+  if(typeof q.body?.enabled!=='boolean')return bad(r,400,'Некорректное значение');
+  try{const x=await pool.query('UPDATE market_sale_settings SET enabled=$1 WHERE id=1 RETURNING enabled',[q.body.enabled]);r.json(x.rows[0])}catch(e){bad(r,500,'Не удалось сохранить настройку')}
+});
 
 app.get('/api/health',(_q,r)=>{
   r.json({status:'ok'});
@@ -1782,7 +1801,7 @@ async function fetchInventory(id){
   throw Error('Инвентарь слишком большой: не все страницы Steam загружены');
 }
 
-app.get('/api/sell/rules',user,async(q,r)=>{
+app.get('/api/sell/rules',user,requireSaleEnabled,async(q,r)=>{
   try{
     const x=await pool.query(
       'SELECT rules_version FROM sell_consents WHERE telegram_id=$1',
@@ -1798,7 +1817,7 @@ app.get('/api/sell/rules',user,async(q,r)=>{
   }
 });
 
-app.post('/api/sell/agree',user,async(q,r)=>{
+app.post('/api/sell/agree',user,requireSaleEnabled,async(q,r)=>{
   if(
     q.body?.version!==RULES||
     q.body?.accepted!==true
@@ -1842,7 +1861,7 @@ async function consent(q,r,next){
   }
 }
 
-app.get('/api/steam/inventory',user,consent,async(q,r)=>{
+app.get('/api/steam/inventory',user,requireSaleEnabled,consent,async(q,r)=>{
   try{
     const id=await steamFor(q.telegramUser.id);
 
@@ -1889,7 +1908,7 @@ app.get('/api/steam/inventory',user,consent,async(q,r)=>{
   }
 });
 
-app.post('/api/sell/requests',user,consent,async(q,r)=>{
+app.post('/api/sell/requests',user,requireSaleEnabled,consent,async(q,r)=>{
   const ids=q.body?.assetids;
 
   if(
@@ -1937,14 +1956,16 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
     const offer=Math.floor(totalKopecks/100);
     if(!Number.isSafeInteger(offer)||offer<1||offer>2147483647)return bad(r,400,'Неверная сумма выкупа');
     const x=await pool.query(
-      `INSERT INTO buyout_requests(
+      `WITH sale_gate AS (SELECT enabled FROM market_sale_settings WHERE id=1 FOR SHARE)
+      INSERT INTO buyout_requests(
         telegram_id,steam_id,items,seller_username,seller_name,offer_rub,status
-      ) VALUES($1,$2,$3::jsonb,$4,$5,$6,'quoted')
+      ) SELECT $1,$2,$3::jsonb,$4,$5,$6,'quoted' FROM sale_gate WHERE enabled
       RETURNING id,status,offer_rub`,
       [q.telegramUser.id,id,JSON.stringify(quoted),q.telegramUser.username||null,
        [q.telegramUser.first_name,q.telegramUser.last_name].filter(Boolean).join(' ')||null,offer]
     );
 
+    if(!x.rowCount)return bad(r,403,'Продажа скинов временно отключена');
     r.status(201).json(x.rows[0]);
   }catch(e){
     bad(r,500,'Ошибка заявки');
