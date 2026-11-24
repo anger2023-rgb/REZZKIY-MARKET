@@ -589,6 +589,12 @@ async function initDb(){
   `);
   await pool.query(`INSERT INTO featured_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
   await repairSupplierCategories();
+  await pool.query(`CREATE TABLE IF NOT EXISTS crypto_pay_test_invoices(
+    invoice_id BIGINT PRIMARY KEY, telegram_id BIGINT NOT NULL,
+    amount NUMERIC(20,8) NOT NULL, payload TEXT NOT NULL UNIQUE,
+    pay_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
+  )`);
   console.log('Database ready');
 }
 
@@ -3997,6 +4003,53 @@ app.get('/api/orders/my',user,async(q,r)=>{
 app.get('/rules',(_q,r)=>{
   r.set('Cache-Control','public, max-age=300');
   r.sendFile(path.join(DIR,'rules.html'));
+});
+
+
+// Crypto Pay: isolated administrator-only sandbox. No live balance credits.
+const cryptoTestToken=()=>process.env.CRYPTO_PAY_TESTNET_API_TOKEN;
+async function cryptoPayCall(method,params={},test=true){
+  const token=test?cryptoTestToken():process.env.CRYPTO_PAY_API_TOKEN;
+  if(!token)throw Error('API token not configured');
+  const response=await fetch((test?'https://testnet-pay.crypt.bot/api/':'https://pay.crypt.bot/api/')+method,{
+    method:'POST',headers:{'Crypto-Pay-API-Token':token,'Content-Type':'application/json'},
+    body:JSON.stringify(params),signal:AbortSignal.timeout(15000)
+  });
+  const data=await response.json();
+  if(!response.ok||!data.ok)throw Error('Crypto Pay API request failed');
+  return data.result;
+}
+async function cryptoTestReconcile(id){
+  const local=(await pool.query('SELECT * FROM crypto_pay_test_invoices WHERE invoice_id=$1',[id])).rows[0];
+  if(!local)return null;
+  const remote=(await cryptoPayCall('getInvoices',{invoice_ids:String(id)})).items?.find(x=>String(x.invoice_id)===String(id));
+  if(!remote||remote.asset!=='USDT'||remote.payload!==local.payload||Number(remote.amount)!==Number(local.amount))throw Error('Invoice mismatch');
+  if(remote.status==='paid')await pool.query("UPDATE crypto_pay_test_invoices SET status='paid',paid_at=NOW() WHERE invoice_id=$1 AND status='active'",[id]);
+  return (await pool.query('SELECT * FROM crypto_pay_test_invoices WHERE invoice_id=$1',[id])).rows[0];
+}
+app.get('/api/admin/crypto-pay/status',admin,async(q,r)=>{
+  try{const live=Boolean(process.env.CRYPTO_PAY_API_TOKEN);if(live)await cryptoPayCall('getMe',{},false);
+    r.json({liveConnected:live,testConfigured:Boolean(cryptoTestToken())});
+  }catch{bad(r,502,'Не удалось проверить Crypto Pay')}
+});
+app.post('/api/admin/crypto-pay/test',admin,async(q,r)=>{
+  const amount=String(q.body?.amount||'');
+  if(!/^\d{1,3}(\.\d{1,2})?$/.test(amount)||Number(amount)<0.1||Number(amount)>100)return bad(r,400,'Сумма от 0.10 до 100 USDT');
+  try{const payload=crypto.randomUUID();const invoice=await cryptoPayCall('createInvoice',{asset:'USDT',amount,payload,expires_in:1800,allow_anonymous:false});
+    const url=new URL(invoice.bot_invoice_url||invoice.pay_url);if(url.protocol!=='https:'||url.hostname!=='t.me')throw Error('Invalid payment URL');
+    const x=await pool.query(`INSERT INTO crypto_pay_test_invoices(invoice_id,telegram_id,amount,payload,pay_url) VALUES($1,$2,$3,$4,$5) RETURNING *`,[invoice.invoice_id,q.admin.id,amount,payload,url.href]);r.json(x.rows[0]);
+  }catch{bad(r,502,'Не удалось создать тестовый счёт; проверь Testnet токен')}
+});
+app.get('/api/admin/crypto-pay/test/:id',admin,async(q,r)=>{
+  if(!validId(q.params.id))return bad(r,400,'Неверный ID');
+  try{const x=await cryptoTestReconcile(q.params.id);if(!x)return bad(r,404,'Счёт не найден');r.json(x)}catch{bad(r,502,'Ошибка проверки счёта')}
+});
+app.post('/api/webhooks/crypto-pay',async(q,r)=>{
+  const token=cryptoTestToken(),sig=q.get('crypto-pay-api-signature');
+  if(!token||!q.rawBody||! /^[a-f0-9]{64}$/i.test(sig||''))return r.sendStatus(401);
+  const expected=crypto.createHmac('sha256',crypto.createHash('sha256').update(token).digest()).update(q.rawBody).digest();
+  if(!crypto.timingSafeEqual(expected,Buffer.from(sig,'hex')))return r.sendStatus(401);
+  try{if(q.body?.update_type==='invoice_paid'&&validId(q.body?.payload?.invoice_id))await cryptoTestReconcile(q.body.payload.invoice_id);r.sendStatus(200)}catch{r.sendStatus(500)}
 });
 
 app.use(express.static(DIR));
