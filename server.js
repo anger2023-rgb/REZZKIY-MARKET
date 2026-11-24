@@ -4007,42 +4007,51 @@ app.get('/rules',(_q,r)=>{
 
 
 // Crypto Pay: isolated administrator-only sandbox. No live balance credits.
-const cryptoTestToken=()=>process.env.CRYPTO_PAY_TESTNET_API_TOKEN;
+const cryptoTestToken=()=>process.env.CRYPTO_PAY_TESTNET_API_TOKEN?.trim();
+function cryptoPayFailure(message){const e=new Error(message);e.cryptoDiagnostic=true;return e;}
+function cryptoPayDiagnostic(e){return e?.cryptoDiagnostic?e.message:e?.code&&/^[0-9A-Z]{5}$/.test(e.code)?'Ошибка базы данных: '+e.code:'Внутренняя ошибка обработки счёта';}
 async function cryptoPayCall(method,params={},test=true){
-  const token=test?cryptoTestToken():process.env.CRYPTO_PAY_API_TOKEN;
-  if(!token)throw Error('API token not configured');
-  const response=await fetch((test?'https://testnet-pay.crypt.bot/api/':'https://pay.crypt.bot/api/')+method,{
+  const token=test?cryptoTestToken():process.env.CRYPTO_PAY_API_TOKEN?.trim();
+  if(!token)throw cryptoPayFailure('API-токен не задан');
+  let response;
+  try{response=await fetch((test?'https://testnet-pay.crypt.bot/api/':'https://pay.crypt.bot/api/')+method,{
     method:'POST',headers:{'Crypto-Pay-API-Token':token,'Content-Type':'application/json'},
-    body:JSON.stringify(params),signal:AbortSignal.timeout(15000)
-  });
-  const data=await response.json();
-  if(!response.ok||!data.ok)throw Error('Crypto Pay API request failed');
+    body:JSON.stringify(params),signal:AbortSignal.timeout(15000),redirect:'error'
+  });}catch(e){throw cryptoPayFailure(method+': '+(e.name==='TimeoutError'?'тайм-аут':'сетевая ошибка'));}
+  let data;try{data=await response.json()}catch{throw cryptoPayFailure(method+': HTTP '+response.status+', ответ не JSON');}
+  if(!response.ok||!data.ok){
+    const name=String(data?.error?.name||'');
+    const safe=/^[A-Z][A-Z_]{1,80}$/.test(name)?name:'API_ERROR';
+    const code=Number(data?.error?.code);
+    throw cryptoPayFailure(method+': HTTP '+response.status+' / '+safe+(Number.isInteger(code)?' ('+code+')':''));
+  }
   return data.result;
 }
 async function cryptoTestReconcile(id){
   const local=(await pool.query('SELECT * FROM crypto_pay_test_invoices WHERE invoice_id=$1',[id])).rows[0];
   if(!local)return null;
   const remote=(await cryptoPayCall('getInvoices',{invoice_ids:String(id)})).items?.find(x=>String(x.invoice_id)===String(id));
-  if(!remote||remote.asset!=='USDT'||remote.payload!==local.payload||Number(remote.amount)!==Number(local.amount))throw Error('Invoice mismatch');
+  if(!remote||remote.asset!=='USDT'||remote.payload!==local.payload||Number(remote.amount)!==Number(local.amount))throw cryptoPayFailure('Данные счёта не совпадают с сохранёнными');
   if(remote.status==='paid')await pool.query("UPDATE crypto_pay_test_invoices SET status='paid',paid_at=NOW() WHERE invoice_id=$1 AND status='active'",[id]);
   return (await pool.query('SELECT * FROM crypto_pay_test_invoices WHERE invoice_id=$1',[id])).rows[0];
 }
 app.get('/api/admin/crypto-pay/status',admin,async(q,r)=>{
-  try{const live=Boolean(process.env.CRYPTO_PAY_API_TOKEN);if(live)await cryptoPayCall('getMe',{},false);
-    r.json({liveConnected:live,testConfigured:Boolean(cryptoTestToken())});
-  }catch{bad(r,502,'Не удалось проверить Crypto Pay')}
+  async function check(test){try{await cryptoPayCall('getMe',{},test);return {connected:true,error:null};}catch(e){const error=cryptoPayDiagnostic(e);console.error('Crypto Pay getMe',test?'testnet':'mainnet',error);return {connected:false,error};}}
+  const [live,test]=await Promise.all([check(false),check(true)]);
+  r.set('Cache-Control','no-store');
+  r.json({liveConnected:live.connected,liveError:live.error,testConfigured:Boolean(cryptoTestToken()),testConnected:test.connected,testError:test.error});
 });
 app.post('/api/admin/crypto-pay/test',admin,async(q,r)=>{
   const amount=String(q.body?.amount||'');
   if(!/^\d{1,3}(\.\d{1,2})?$/.test(amount)||Number(amount)<0.1||Number(amount)>100)return bad(r,400,'Сумма от 0.10 до 100 USDT');
   try{const payload=crypto.randomUUID();const invoice=await cryptoPayCall('createInvoice',{asset:'USDT',amount,payload,expires_in:1800,allow_anonymous:false});
-    const url=new URL(invoice.bot_invoice_url||invoice.pay_url);if(url.protocol!=='https:'||url.hostname!=='t.me')throw Error('Invalid payment URL');
+    const url=new URL(invoice.bot_invoice_url||invoice.pay_url);if(url.protocol!=='https:'||url.hostname!=='t.me')throw cryptoPayFailure('createInvoice: недопустимая ссылка оплаты');
     const x=await pool.query(`INSERT INTO crypto_pay_test_invoices(invoice_id,telegram_id,amount,payload,pay_url) VALUES($1,$2,$3,$4,$5) RETURNING *`,[invoice.invoice_id,q.admin.id,amount,payload,url.href]);r.json(x.rows[0]);
-  }catch{bad(r,502,'Не удалось создать тестовый счёт; проверь Testnet токен')}
+  }catch(e){const message=cryptoPayDiagnostic(e);console.error('Crypto Pay test invoice:',message);bad(r,502,message)}
 });
 app.get('/api/admin/crypto-pay/test/:id',admin,async(q,r)=>{
   if(!validId(q.params.id))return bad(r,400,'Неверный ID');
-  try{const x=await cryptoTestReconcile(q.params.id);if(!x)return bad(r,404,'Счёт не найден');r.json(x)}catch{bad(r,502,'Ошибка проверки счёта')}
+  try{const x=await cryptoTestReconcile(q.params.id);if(!x)return bad(r,404,'Счёт не найден');r.json(x)}catch(e){const message=cryptoPayDiagnostic(e);console.error('Crypto Pay check:',message);bad(r,502,message)}
 });
 app.post('/api/webhooks/crypto-pay',async(q,r)=>{
   const token=cryptoTestToken(),sig=q.get('crypto-pay-api-signature');
