@@ -13,7 +13,7 @@ const DIR=path.dirname(fileURLToPath(import.meta.url));
 const SITE_URL='https://rezzkiy-market-production-dbf4.up.railway.app';
 const OPENID='https://steamcommunity.com/openid/login';
 const NS='http://specs.openid.net/auth/2.0';
-const RULES='2026-11-10-auto-buyout-v2';
+const RULES='2026-11-25-public-offer-v3';
 
 app.disable('x-powered-by');
 app.use(express.json({limit:'5mb',verify:(req,_res,buf)=>{req.rawBody=Buffer.from(buf)}}));
