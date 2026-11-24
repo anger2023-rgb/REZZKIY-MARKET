@@ -538,7 +538,7 @@ async function initDb(){
   await pool.query(`
     ALTER TABLE usdt_orders
     ADD CONSTRAINT usdt_orders_network_check
-    CHECK(network IN ('TRC20','BEP20','BALANCE','RUB'))
+    CHECK(network IN ('TRC20','BEP20','BALANCE','RUB','CRYPTOPAY'))
   `);
 
   await pool.query(`
@@ -601,6 +601,8 @@ async function initDb(){
     pay_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
   )`);
+  await pool.query("ALTER TABLE usdt_settings ADD COLUMN IF NOT EXISTS checkout_provider TEXT NOT NULL DEFAULT 'wallet'");
+  await pool.query("ALTER TABLE usdt_orders ADD COLUMN IF NOT EXISTS crypto_invoice_id BIGINT UNIQUE, ADD COLUMN IF NOT EXISTS crypto_pay_url TEXT");
   console.log('Database ready');
 }
 
@@ -1950,9 +1952,11 @@ app.post('/api/sell/requests',user,consent,async(q,r)=>{
 
 app.get('/api/sell/requests',user,async(q,r)=>{
   try{
+    const pending=await pool.query("SELECT crypto_invoice_id FROM usdt_orders WHERE telegram_id=$1 AND network='CRYPTOPAY' AND status='awaiting' AND crypto_invoice_id IS NOT NULL ORDER BY id DESC LIMIT 10",[q.telegramUser.id]);
+    await Promise.allSettled(pending.rows.map(x=>cryptoLiveReconcile(x.crypto_invoice_id)));
     const x=await pool.query(
       `SELECT
-        id,
+        id,crypto_pay_url,
         items,
         status,
         offer_rub,
@@ -3394,12 +3398,14 @@ app.patch('/api/admin/deals/:id/status',admin,async(q,r)=>{
 
 /* USDT invoice and order routes */
 
+app.get('/api/checkout-provider',async(_q,r)=>{try{const x=await pool.query('SELECT checkout_provider FROM usdt_settings WHERE id=1');r.set('Cache-Control','no-store').json({provider:x.rows[0]?.checkout_provider||'wallet'})}catch(e){bad(r,500,'Настройки недоступны')}});
+app.put('/api/checkout-provider',admin,async(q,r)=>{const p=q.body?.provider;if(!['wallet','cryptopay'].includes(p))return bad(r,400,'Неверный способ');try{if(p==='cryptopay')await cryptoPayCall('getMe',{},false);await pool.query('UPDATE usdt_settings SET checkout_provider=$1 WHERE id=1',[p]);r.json({provider:p})}catch(e){bad(r,502,'Не удалось сохранить способ оплаты')}});
 app.post('/api/orders/usdt',user,async(q,r)=>{
   const ids=q.body?.productIds;
-  const network=q.body?.network;
+  let network=q.body?.network;
 
   if(
-    !['TRC20','BEP20'].includes(network)||
+    !['TRC20','BEP20','CRYPTOPAY'].includes(network)||
     !Array.isArray(ids)||
     ids.length<1||
     ids.length>50||
@@ -3416,7 +3422,7 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
     await client.query('BEGIN');
 
     const settings=await client.query(
-      `SELECT rate_kopecks,trc20_address,bep20_address
+      `SELECT rate_kopecks,trc20_address,bep20_address,checkout_provider
        FROM usdt_settings WHERE id=1`
     );
 
@@ -3427,11 +3433,12 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       return bad(r,503,'Настройки USDT недоступны');
     }
 
-    const address=network==='TRC20'
+    if ((config.checkout_provider==='cryptopay') !== (network==='CRYPTOPAY')) { await client.query('ROLLBACK'); return bad(r,409,'Способ оплаты изменился. Открой корзину заново'); }
+    const address=network==='CRYPTOPAY'?'':network==='TRC20'
       ?config.trc20_address
       :config.bep20_address?.toLowerCase();
 
-    if(!validUsdtAddress(network,address)){
+    if(network!=='CRYPTOPAY'&&!validUsdtAddress(network,address)){
       await client.query('ROLLBACK');
       return bad(r,409,'Кошелёк этой сети ещё не настроен');
     }
@@ -3545,6 +3552,15 @@ app.post('/api/orders/usdt',user,async(q,r)=>{
       ]
     );
 
+    if(network==='CRYPTOPAY'){
+      const amount=(amountCents/100).toFixed(2),payload=crypto.randomUUID();
+      const invoice=await cryptoPayCall('createInvoice',{asset:'USDT',amount,payload,expires_in:1800,allow_anonymous:false},false);
+      const url=new URL(invoice.bot_invoice_url||invoice.pay_url);
+      if(url.protocol!=='https:'||url.hostname!=='t.me')throw Error('Invalid payment URL');
+      await client.query('INSERT INTO crypto_pay_live_invoices(invoice_id,telegram_id,amount,payload,pay_url) VALUES($1,$2,$3,$4,$5)',[invoice.invoice_id,q.telegramUser.id,amount,payload,url.href]);
+      await client.query('UPDATE usdt_orders SET crypto_invoice_id=$1,crypto_pay_url=$2 WHERE id=$3',[invoice.invoice_id,url.href,order.rows[0].id]);
+      order.rows[0].crypto_pay_url=url.href;
+    }
     await client.query('COMMIT');
     r.status(201).json(order.rows[0]);
   }catch(e){
@@ -3646,7 +3662,7 @@ app.post('/api/orders/:id/reported',user,async(q,r)=>{
            reported_at=NOW()
        WHERE id=$1
          AND telegram_id=$2
-         AND status='awaiting' AND order_kind='purchase'
+         AND status='awaiting' AND order_kind='purchase' AND network<>'CRYPTOPAY'
        RETURNING id,status,reported_at`,
       [q.params.id,q.telegramUser.id]
     );
@@ -4072,7 +4088,11 @@ async function cryptoLiveReconcile(id){
   if(!local)return null;
   const remote=(await cryptoPayCall('getInvoices',{invoice_ids:String(id)},false)).items?.find(x=>String(x.invoice_id)===String(id));
   if(!remote||remote.asset!=='USDT'||remote.payload!==local.payload||Number(remote.amount)!==Number(local.amount))throw cryptoPayFailure('Данные счёта не совпадают с сохранёнными');
-  if(remote.status==='paid')await pool.query("UPDATE crypto_pay_live_invoices SET status='paid',paid_at=NOW() WHERE invoice_id=$1 AND status='active'",[id]);
+  if(remote.status==='paid'){
+    const db=await pool.connect();try{await db.query('BEGIN');
+    await db.query("UPDATE usdt_orders SET status='paid',reviewed_at=NOW() WHERE crypto_invoice_id=$1 AND network='CRYPTOPAY' AND status='awaiting'",[id]);
+    await db.query("UPDATE crypto_pay_live_invoices SET status='paid',paid_at=NOW() WHERE invoice_id=$1 AND status='active'",[id]);await db.query('COMMIT');}catch(e){await db.query('ROLLBACK');throw e}finally{db.release()}
+  }
   return (await pool.query('SELECT * FROM crypto_pay_live_invoices WHERE invoice_id=$1',[id])).rows[0];
 }
 app.post('/api/admin/crypto-pay/live',admin,async(q,r)=>{
