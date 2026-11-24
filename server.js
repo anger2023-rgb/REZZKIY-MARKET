@@ -595,6 +595,12 @@ async function initDb(){
     pay_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
   )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS crypto_pay_live_invoices(
+    invoice_id BIGINT PRIMARY KEY, telegram_id BIGINT NOT NULL,
+    amount NUMERIC(20,8) NOT NULL, payload TEXT NOT NULL UNIQUE,
+    pay_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ
+  )`);
   console.log('Database ready');
 }
 
@@ -4061,7 +4067,41 @@ app.post('/api/webhooks/crypto-pay',async(q,r)=>{
   try{if(q.body?.update_type==='invoice_paid'&&validId(q.body?.payload?.invoice_id))await cryptoTestReconcile(q.body.payload.invoice_id);r.sendStatus(200)}catch{r.sendStatus(500)}
 });
 
-app.use(express.static(DIR));
+async function cryptoLiveReconcile(id){
+  const local=(await pool.query('SELECT * FROM crypto_pay_live_invoices WHERE invoice_id=$1',[id])).rows[0];
+  if(!local)return null;
+  const remote=(await cryptoPayCall('getInvoices',{invoice_ids:String(id)},false)).items?.find(x=>String(x.invoice_id)===String(id));
+  if(!remote||remote.asset!=='USDT'||remote.payload!==local.payload||Number(remote.amount)!==Number(local.amount))throw cryptoPayFailure('Данные счёта не совпадают с сохранёнными');
+  if(remote.status==='paid')await pool.query("UPDATE crypto_pay_live_invoices SET status='paid',paid_at=NOW() WHERE invoice_id=$1 AND status='active'",[id]);
+  return (await pool.query('SELECT * FROM crypto_pay_live_invoices WHERE invoice_id=$1',[id])).rows[0];
+}
+app.post('/api/admin/crypto-pay/live',admin,async(q,r)=>{
+  if(q.body?.confirm!==true)return bad(r,400,'Подтверди реальные деньги');
+  const amount=String(q.body?.amount||'');
+  if(!/^\d{1,3}(\.\d{1,2})?$/.test(amount)||Number(amount)<0.1||Number(amount)>100)return bad(r,400,'Сумма от 0.10 до 100 USDT');
+  try{const payload=crypto.randomUUID();const invoice=await cryptoPayCall('createInvoice',{asset:'USDT',amount,payload,expires_in:1800,allow_anonymous:false},false);
+    const url=new URL(invoice.bot_invoice_url||invoice.pay_url);if(url.protocol!=='https:'||url.hostname!=='t.me')throw cryptoPayFailure('createInvoice: недопустимая ссылка оплаты');
+    const x=await pool.query(`INSERT INTO crypto_pay_live_invoices(invoice_id,telegram_id,amount,payload,pay_url) VALUES($1,$2,$3,$4,$5) RETURNING *`,[invoice.invoice_id,q.admin.id,amount,payload,url.href]);r.json(x.rows[0]);
+  }catch(e){const message=cryptoPayDiagnostic(e);console.error('Crypto Pay live invoice:',message);bad(r,502,message)}
+});
+app.get('/api/admin/crypto-pay/live/:id',admin,async(q,r)=>{
+  if(!validId(q.params.id))return bad(r,400,'Неверный ID');
+  try{const x=await cryptoLiveReconcile(q.params.id);if(!x)return bad(r,404,'Счёт не найден');r.json(x)}catch(e){const message=cryptoPayDiagnostic(e);console.error('Crypto Pay check:',message);bad(r,502,message)}
+});
+app.post('/api/webhooks/crypto-pay-live',async(q,r)=>{
+  const token=process.env.CRYPTO_PAY_API_TOKEN?.trim(),sig=q.get('crypto-pay-api-signature');
+  if(!token||!q.rawBody||! /^[a-f0-9]{64}$/i.test(sig||''))return r.sendStatus(401);
+  const expected=crypto.createHmac('sha256',crypto.createHash('sha256').update(token).digest()).update(q.rawBody).digest();
+  if(!crypto.timingSafeEqual(expected,Buffer.from(sig,'hex')))return r.sendStatus(401);
+  try{if(q.body?.update_type==='invoice_paid'&&validId(q.body?.payload?.invoice_id))await cryptoLiveReconcile(q.body.payload.invoice_id);r.sendStatus(200)}catch{r.sendStatus(500)}
+});
+
+app.get('/api/admin/crypto-pay/live-history',admin,async(q,r)=>{
+  try{const x=await pool.query('SELECT invoice_id,amount,status,created_at,paid_at FROM crypto_pay_live_invoices ORDER BY created_at DESC LIMIT 50');r.set('Cache-Control','no-store');r.json(x.rows)}catch(e){bad(r,500,'Ошибка истории')}
+});
+
+app.use((q,r,next)=>{if(/\.(?:js|mjs|cjs|env|sql)$/i.test(q.path))return r.sendStatus(404);next()});
+app.use(express.static(DIR,{dotfiles:'deny'}));
 
 app.get('/',(_q,r)=>{
   r.sendFile(
