@@ -260,6 +260,8 @@ function publicPayment(row){
 }
 
 async function initDb(){
+  await pool.query(`CREATE TABLE IF NOT EXISTS market_winter_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled BOOLEAN NOT NULL DEFAULT TRUE)`);
+  await pool.query(`INSERT INTO market_winter_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
   await pool.query(`CREATE TABLE IF NOT EXISTS market_sale_settings(id INTEGER PRIMARY KEY CHECK(id=1), enabled BOOLEAN NOT NULL DEFAULT TRUE)`);
   await pool.query(`INSERT INTO market_sale_settings(id) VALUES(1) ON CONFLICT DO NOTHING`);
 
@@ -646,6 +648,8 @@ app.put('/api/admin/sale-availability',admin,async(q,r)=>{
   try{const x=await pool.query('UPDATE market_sale_settings SET enabled=$1 WHERE id=1 RETURNING enabled',[q.body.enabled]);r.json(x.rows[0])}catch(e){bad(r,500,'Не удалось сохранить настройку')}
 });
 
+app.get('/api/winter-theme',async(q,r)=>{try{const x=await pool.query('SELECT enabled FROM market_winter_settings WHERE id=1');r.set('Cache-Control','no-store');r.json({enabled:x.rows[0]?.enabled===true})}catch(e){bad(r,503,'Ошибка оформления')}});
+app.put('/api/admin/winter-theme',admin,async(q,r)=>{if(typeof q.body?.enabled!=='boolean')return bad(r,400,'Некорректное значение');try{const x=await pool.query('UPDATE market_winter_settings SET enabled=$1 WHERE id=1 RETURNING enabled',[q.body.enabled]);r.json(x.rows[0])}catch(e){bad(r,500,'Не удалось сохранить оформление')}});
 app.get('/api/health',(_q,r)=>{
   r.json({status:'ok'});
 });
